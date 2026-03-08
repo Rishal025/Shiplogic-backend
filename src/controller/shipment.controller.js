@@ -724,7 +724,184 @@ const hasValues = (obj) => {
   );
 };
 
+// Mock extraction response — fallback when Python API is unavailable
+function getMockExtractionResponse() {
+  return {
+    piNo: 'PI-2024-001',
+    piDate: '2024-03-01',
+    fpoNo: 'PO-2024-456',
+    purchaseDate: '2024-03-05',
+    incoTerms: 'CIF',
+    portOfLoading: 'Karachi',
+    portOfDischarge: 'Dubai',
+    commodity: 'Rice',
+    brandName: 'Royal Basmati',
+    itemDescription: 'Basmati Rice 25kg bags',
+    supplierCode: 'SUP-001',
+    supplierName: 'Pakistan Rice Exporters',
+    itemCode: 'RICE-25KG',
+    countryOfOrigin: 'Pakistan',
+    packagingType: '25 Kg Bags',
+    containerSize: '40',
+    plannedContainers: 500,
+    fcl: 20,
+    pallet: 100,
+    bags: 20000,
+    noOfShipments: 20,
+    buyingUnit: 'MT',
+    fcPerUnit: 450,
+    totalUSD: 225000,
+    totalAED: 825750,
+    paymentTerms: '20% Advance and 80% CAD',
+    advanceAmount: 45000,
+    expectedETD: '2024-04-15',
+    expectedETA: '2024-05-10'
+  };
+}
 
+// Parse number from strings like "USD 985.00", "480.000 MT (+/- 5%)", "48,000.00"
+function parseNum(s) {
+  if (s == null) return undefined;
+  if (typeof s === 'number' && !Number.isNaN(s)) return s;
+  if (typeof s !== 'string') return undefined;
+  const cleaned = s.replace(/,/g, '').replace(/[^\d.-]/g, ' ');
+  const match = cleaned.match(/-?\d+\.?\d*/);
+  return match ? parseFloat(match[0]) : undefined;
+}
+
+// Map Python extraction API response to frontend ExtractedShipmentData shape
+function mapPythonResponseToExtraction(pythonRes) {
+  const out = {};
+  if (!pythonRes || typeof pythonRes !== 'object') return out;
+
+  const lpo = pythonRes.lpo_invoice || {};
+  const pi = pythonRes.performa_invoice || {};
+
+  // Shipment info
+  if (pi.pi_number != null && pi.pi_number !== '') out.piNo = String(pi.pi_number).trim();
+  if (pi.pi_date != null && pi.pi_date !== '') out.piDate = String(pi.pi_date).trim();
+  if (lpo.po_number != null && lpo.po_number !== '') out.fpoNo = String(lpo.po_number).trim();
+  if (lpo.po_date != null && lpo.po_date !== '') out.purchaseDate = String(lpo.po_date).trim();
+  if (pi.inco_terms != null && pi.inco_terms !== '') out.incoTerms = String(pi.inco_terms).trim();
+  if (pi.port_of_loading != null && pi.port_of_loading !== '') out.portOfLoading = String(pi.port_of_loading).trim();
+  if (pi.port_of_discharge != null && pi.port_of_discharge !== '') out.portOfDischarge = String(pi.port_of_discharge).trim();
+  if (lpo.commodity != null && lpo.commodity !== '') out.commodity = String(lpo.commodity).trim();
+  if (pi.brand != null && pi.brand !== '') out.brandName = String(pi.brand).trim();
+  const itemDesc = lpo.item ?? pi.item ?? '';
+  if (itemDesc !== '') out.itemDescription = String(itemDesc).trim();
+
+  // Supplier (Python returns names only)
+  const supplierName = pi.supplier_details ?? lpo.vendor ?? '';
+  if (supplierName !== '') out.supplierName = String(supplierName).trim();
+
+  // Item
+  if (lpo.item_code != null && lpo.item_code !== '') out.itemCode = String(lpo.item_code).trim();
+
+  // Packaging / quantity
+  if (pi.packaging != null && pi.packaging !== '') out.packagingType = String(pi.packaging).trim();
+
+  const qtyPi = pi.quantity;
+  if (qtyPi != null && qtyPi !== '') {
+    const parsed = parseNum(qtyPi);
+    if (parsed != null) out.plannedContainers = parsed;
+    if (/mt|mton|metric/i.test(String(qtyPi))) out.buyingUnit = 'MT';
+  }
+  const qtyLpo = lpo.quantity;
+  if (qtyLpo != null && qtyLpo !== '' && out.plannedContainers == null) {
+    const parsed = parseNum(qtyLpo);
+    if (parsed != null) out.plannedContainers = parsed;
+  }
+  if (lpo.unit != null && lpo.unit !== '' && !out.buyingUnit) {
+    const u = String(lpo.unit).toUpperCase();
+    if (['MT', 'KG', 'BAG', 'PALLET'].includes(u)) out.buyingUnit = u === 'BAG' ? 'Bag' : u;
+  }
+  if (!out.buyingUnit) out.buyingUnit = 'MT';
+
+  // Price
+  const pricePerMton = pi.price_per_mton ?? pi.price_per_mt;
+  if (pricePerMton != null && pricePerMton !== '') {
+    const n = parseNum(pricePerMton);
+    if (n != null) out.fcPerUnit = n;
+  }
+  const totalPrice = pi.total_price ?? lpo.price;
+  if (totalPrice != null && totalPrice !== '') {
+    const n = parseNum(totalPrice);
+    if (n != null) out.totalUSD = n;
+  }
+  if (pi.payment_terms != null && pi.payment_terms !== '') out.paymentTerms = String(pi.payment_terms).trim();
+
+  if (out.totalUSD != null && typeof out.totalUSD === 'number') {
+    out.totalAED = Math.round(out.totalUSD * 3.67 * 100) / 100;
+  }
+
+  return out;
+}
+
+// =======================
+// EXTRACT FROM DOCUMENTS — calls Python API, maps response to frontend shape
+// Frontend sends: document1 = Purchase order (LPO), document2 = Performa Invoice (PI)
+// Python API expects: lpo_invoice, performa_invoice (with optional inco_terms_list, suppliers)
+// =======================
+exports.extractFromDocuments = async (req, res) => {
+  try {
+    const files = req.files;
+    // document1 = Purchase order → lpo_invoice, document2 = Performa Invoice → performa_invoice
+    if (!files?.document1?.[0] || !files?.document2?.[0]) {
+      return res.status(400).json({
+        message: 'Both Purchase order (document1) and Performa Invoice (document2) are required'
+      });
+    }
+
+    const pythonUrl = process.env.PYTHON_EXTRACTION_API_URL || 'http://localhost:8096';
+    const endpoint = `${pythonUrl.replace(/\/$/, '')}/shipment-form`;
+    const incoTermsList = process.env.PYTHON_INCO_TERMS_LIST || 'CIF,FOB,EXWORKS';
+    const suppliersList = process.env.PYTHON_SUPPLIERS_LIST || '';
+
+    const lpoFile = files.document1[0];
+    const piFile = files.document2[0];
+
+    const FormData = globalThis.FormData;
+    const form = new FormData();
+    const lpoBlob = new Blob([lpoFile.buffer], { type: lpoFile.mimetype || 'application/octet-stream' });
+    const piBlob = new Blob([piFile.buffer], { type: piFile.mimetype || 'application/octet-stream' });
+    form.append('lpo_invoice', lpoBlob, lpoFile.originalname || 'lpo.pdf');
+    form.append('performa_invoice', piBlob, piFile.originalname || 'pi.pdf');
+    form.append('inco_terms_list', incoTermsList);
+    form.append('suppliers', suppliersList);
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: form
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      let errJson;
+      try { errJson = JSON.parse(errText); } catch { errJson = { detail: errText }; }
+      return res.status(response.status).json({
+        message: errJson.detail || errJson.message || `Python extraction service returned ${response.status}`,
+        error: errJson
+      });
+    }
+
+    const pythonRes = await response.json();
+    const data = mapPythonResponseToExtraction(pythonRes);
+
+    return res.status(200).json({
+      message: 'Data extracted successfully',
+      data: data || {}
+    });
+  } catch (err) {
+    console.error('Extract from documents error:', err);
+    const isNetwork = err.cause?.code === 'ECONNREFUSED' || err.code === 'ECONNREFUSED';
+    return res.status(500).json({
+      message: isNetwork
+        ? 'Extraction service unavailable. Check PYTHON_EXTRACTION_API_URL and that the Python service is running.'
+        : (err.message || 'Server error'),
+      error: err.message
+    });
+  }
+};
 
 
 

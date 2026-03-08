@@ -1,8 +1,20 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
 const controller = require('../controller/shipment.controller');
 const authMiddleware = require('../core/utils/authMiddleware');
 const authorize = require('../core/utils/authorize');
+
+// Multer: memory storage for document uploads (for Python service later)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB per file
+  fileFilter: (req, file, cb) => {
+    const allowed = /\.(pdf|jpg|jpeg|png|gif|webp)$/i.test(file.originalname);
+    if (allowed) cb(null, true);
+    else cb(new Error('Only PDF and image files are allowed'));
+  }
+});
 
 // Only Purchase can create shipment
 router.post(
@@ -10,6 +22,22 @@ router.post(
   authMiddleware,
   authorize(['Purchase','Admin']),
   controller.createShipment
+);
+
+// Extract data from PI/PO documents (calls Python service when integrated; mock for now)
+router.post(
+  '/extract-documents',
+  authMiddleware,
+  authorize(['Purchase','Admin']),
+  (req, res, next) => {
+    upload.fields([{ name: 'document1', maxCount: 1 }, { name: 'document2', maxCount: 1 }])(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      }
+      next();
+    });
+  },
+  controller.extractFromDocuments
 );
 
 router.post(

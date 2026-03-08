@@ -35,7 +35,6 @@ exports.createItem = async (req, res) => {
   }
 };
 
-// =======================
 // GET ITEMS - Pagination & Search
 // =======================
 exports.getItems = async (req, res) => {
@@ -65,6 +64,20 @@ exports.getItems = async (req, res) => {
       totalRecords: total,
       items
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// =======================
+// GET ITEM BY ID
+// =======================
+exports.getItemById = async (req, res) => {
+  try {
+    const item = await Item.findById(req.params.id);
+    if (!item) return res.status(404).json({ message: "Item not found" });
+    res.json(item);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });

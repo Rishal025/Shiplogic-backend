@@ -54,5 +54,13 @@ router.get(
   }
 );
 
+// Get supplier by ID - must be after /all
+router.get(
+  '/:id',
+  authMiddleware,
+  authorize(['Purchase','FAS','Logistics','Manager','Admin']),
+  supplierController.getSupplierById
+);
+
 module.exports = router;
 

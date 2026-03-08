@@ -11,7 +11,15 @@ const shipmentRoutes = require('./routes/shipment.route');
 
 const app = express();
 
-app.use(cors());
+// Allow frontend origin(s). Comma-separated in FRONTEND_ORIGIN, or default to dev server
+const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:4200').split(',').map(s => s.trim());
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(null, false);
+  },
+  credentials: true
+}));
 app.use(bodyParser.json());
 
 // Routes

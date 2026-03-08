@@ -30,3 +30,15 @@ exports.createSupplier = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// Get supplier by ID
+exports.getSupplierById = async (req, res) => {
+  try {
+    const supplier = await Supplier.findById(req.params.id);
+    if (!supplier) return res.status(404).json({ message: "Supplier not found" });
+    res.json(supplier);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+};

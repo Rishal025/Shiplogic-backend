@@ -20,4 +20,12 @@ router.get(
   itemController.getItems
 );
 
+// GET ITEM BY ID - must be after /all
+router.get(
+  '/:id',
+  authMiddleware,
+  authorize(['Purchase','FAS','Logistics','Manager','Admin']),
+  itemController.getItemById
+);
+
 module.exports = router;
