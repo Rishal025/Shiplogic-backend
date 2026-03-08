@@ -24,7 +24,7 @@ router.post(
   controller.createShipment
 );
 
-// Extract data from PI/PO documents (calls Python service when integrated; mock for now)
+// Extract data from PI/PO documents — calls Python service, returns mapped response only
 router.post(
   '/extract-documents',
   authMiddleware,

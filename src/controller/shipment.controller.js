@@ -724,41 +724,6 @@ const hasValues = (obj) => {
   );
 };
 
-// Mock extraction response — fallback when Python API is unavailable
-function getMockExtractionResponse() {
-  return {
-    piNo: 'PI-2024-001',
-    piDate: '2024-03-01',
-    fpoNo: 'PO-2024-456',
-    purchaseDate: '2024-03-05',
-    incoTerms: 'CIF',
-    portOfLoading: 'Karachi',
-    portOfDischarge: 'Dubai',
-    commodity: 'Rice',
-    brandName: 'Royal Basmati',
-    itemDescription: 'Basmati Rice 25kg bags',
-    supplierCode: 'SUP-001',
-    supplierName: 'Pakistan Rice Exporters',
-    itemCode: 'RICE-25KG',
-    countryOfOrigin: 'Pakistan',
-    packagingType: '25 Kg Bags',
-    containerSize: '40',
-    plannedContainers: 500,
-    fcl: 20,
-    pallet: 100,
-    bags: 20000,
-    noOfShipments: 20,
-    buyingUnit: 'MT',
-    fcPerUnit: 450,
-    totalUSD: 225000,
-    totalAED: 825750,
-    paymentTerms: '20% Advance and 80% CAD',
-    advanceAmount: 45000,
-    expectedETD: '2024-04-15',
-    expectedETA: '2024-05-10'
-  };
-}
-
 // Parse number from strings like "USD 985.00", "480.000 MT (+/- 5%)", "48,000.00"
 function parseNum(s) {
   if (s == null) return undefined;
