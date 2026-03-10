@@ -125,7 +125,7 @@ exports.createShipment = async (req, res) => {
 
 exports.createPlannedContainersBulk = async (req, res) => {
   try {
-    const { shipmentId, plannedContainers } = req.body;
+    const { shipmentId, plannedContainers, noOfShipments } = req.body;
 
     if (!Array.isArray(plannedContainers)) {
       return res.status(400).json({ message: "plannedContainers must be an array" });
@@ -133,6 +133,8 @@ exports.createPlannedContainersBulk = async (req, res) => {
 
     const shipment = await Shipment.findById(shipmentId);
     if (!shipment) return res.status(404).json({ message: "Shipment not found" });
+
+    const totalQtyMT = shipment.plannedQtyMT ?? shipment.totalOrderedQtyMT ?? 0;
 
     // 1️⃣ Delete all existing planned containers for this shipment
     await Container.deleteMany({ shipmentId, status: "Planned" });
@@ -142,10 +144,10 @@ exports.createPlannedContainersBulk = async (req, res) => {
     const processedContainers = [];
 
     for (let c of plannedContainers) {
-      // Check if totalOrderedQtyMT exceeded
-      if (currentPlannedMT + c.qtyMT > shipment.totalOrderedQtyMT) {
+      const qty = Number(c.qtyMT) || 0;
+      if (totalQtyMT > 0 && currentPlannedMT + qty > totalQtyMT) {
         return res.status(400).json({
-          message: `Cannot add container of ${c.qtyMT} MT. Total would exceed ordered quantity (${shipment.totalOrderedQtyMT} MT)`
+          message: `Cannot add container of ${qty} MT. Total would exceed ordered quantity (${totalQtyMT} MT)`
         });
       }
 
@@ -155,19 +157,20 @@ exports.createPlannedContainersBulk = async (req, res) => {
           size: c.size,
           FCL: c.FCL,
           weekWiseShipment: c.weekWiseShipment,
-          qtyMT: c.qtyMT,
+          qtyMT: qty,
           buyingUnit: c.buyingUnit || "MT"
         },
         status: "Planned"
       });
 
-      currentPlannedMT += c.qtyMT;
+      currentPlannedMT += qty;
       processedContainers.push(container);
     }
 
-    // 3️⃣ Recalculate shipment totals
+    // 3️⃣ Recalculate shipment totals and save noOfShipments
     shipment.plannedQtyMT = currentPlannedMT;
     shipment.assumedContainerCount = processedContainers.length;
+    if (noOfShipments != null && noOfShipments !== '') shipment.noOfShipments = Number(noOfShipments);
     shipment.currentStage = "Planned Split";
     await shipment.save();
 
@@ -682,7 +685,9 @@ exports.getShipmentById = async (req, res) => {
       shipment: {
         _id: shipment._id,
         shipmentNo: shipment.shipmentNo,
-        orderNumber: shipment.orderNumber,
+        orderNumber: shipment.poNumber,
+        poNumber: shipment.poNumber,
+        fpoNo: shipment.fpoNo,
         orderDate: shipment.orderDate,
         supplier: shipment.supplierId?.name || null,
         item: shipment.itemId
@@ -694,7 +699,7 @@ exports.getShipmentById = async (req, res) => {
         totalOrderedQtyMT: shipment.totalOrderedQtyMT,
         plannedQtyMT: shipment.plannedQtyMT,
         actualQtyMT: shipment.actualQtyMT,
-        assumedContainerCount: shipment.totalSplitQtyMT,
+        assumedContainerCount: shipment.assumedContainerCount ?? shipment.totalSplitQtyMT,
         currentStage: shipment.currentStage,
         payment: shipment.payment.totalAmount,
         incoterms:shipment.incoterms,
@@ -704,7 +709,8 @@ exports.getShipmentById = async (req, res) => {
         paymentTerms:shipment.paymentTerms,
         plannedETD:shipment.plannedETD,
         plannedETA:shipment.plannedETA,
-        containerSize:shipment.containersize
+        containerSize:shipment.containersize,
+        noOfShipments: shipment.noOfShipments
       },
       planned,
       actual
@@ -799,6 +805,31 @@ function mapPythonResponseToExtraction(pythonRes) {
     out.totalAED = Math.round(out.totalUSD * 3.67 * 100) / 100;
   }
 
+  // shipment_calculations: pass through and use for fcl, pallet, bags, containerSize
+  const sc = pythonRes.shipment_calculations;
+  if (sc && typeof sc === 'object') {
+    if (sc.fcl != null) out.fcl = Number(sc.fcl);
+    if (sc.pallets != null) out.pallet = Number(sc.pallets);
+    if (sc.bags != null) out.bags = Number(sc.bags);
+    if (sc.container_size != null && sc.container_size !== '') {
+      const size = String(sc.container_size).trim().toLowerCase();
+      if (size.startsWith('40')) out.containerSize = '40';
+      else if (size.startsWith('20')) out.containerSize = '20';
+    }
+    out.shipmentCalculations = {
+      fcl: sc.fcl != null ? Number(sc.fcl) : undefined,
+      bags: sc.bags != null ? Number(sc.bags) : undefined,
+      container_size: sc.container_size != null ? String(sc.container_size) : undefined,
+      bags_per_container: sc.bags_per_container != null ? Number(sc.bags_per_container) : undefined,
+      pallets: sc.pallets != null ? Number(sc.pallets) : undefined,
+      is_price_matching: sc.is_price_matching === true,
+      lpo_price_per_mt: sc.lpo_price_per_mt != null ? Number(sc.lpo_price_per_mt) : undefined,
+      pi_price_per_mt: sc.pi_price_per_mt != null ? Number(sc.pi_price_per_mt) : undefined,
+      mt_variation: sc.mt_variation != null ? Number(sc.mt_variation) : undefined,
+      diff_percent: sc.diff_percent != null ? Number(sc.diff_percent) : undefined
+    };
+  }
+
   return out;
 }
 
@@ -862,6 +893,55 @@ exports.extractFromDocuments = async (req, res) => {
     return res.status(500).json({
       message: isNetwork
         ? 'Extraction service unavailable. Check PYTHON_EXTRACTION_API_URL and that the Python service is running.'
+        : (err.message || 'Server error'),
+      error: err.message
+    });
+  }
+};
+
+// =======================
+// EXTRACT BILL NO — calls Python purchase-tracker/bill-no (single file: PDF or image)
+// =======================
+exports.extractBillNo = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'File is required' });
+    }
+
+    const pythonUrl = process.env.PYTHON_EXTRACTION_API_URL || 'http://localhost:8096';
+    const endpoint = `${pythonUrl.replace(/\/$/, '')}/purchase-tracker/bill-no`;
+
+    const FormData = globalThis.FormData;
+    const form = new FormData();
+    const blob = new Blob([req.file.buffer], { type: req.file.mimetype || 'application/octet-stream' });
+    form.append('file', blob, req.file.originalname || 'document');
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: form
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      let errJson;
+      try { errJson = JSON.parse(errText); } catch { errJson = { detail: errText }; }
+      return res.status(response.status).json({
+        message: errJson.detail || errJson.message || `Bill-no extraction service returned ${response.status}`,
+        error: errJson
+      });
+    }
+
+    const pythonRes = await response.json();
+    return res.status(200).json({
+      bill_no: pythonRes.bill_no ?? '',
+      metadata: pythonRes.metadata
+    });
+  } catch (err) {
+    console.error('Extract bill no error:', err);
+    const isNetwork = err.cause?.code === 'ECONNREFUSED' || err.code === 'ECONNREFUSED';
+    return res.status(500).json({
+      message: isNetwork
+        ? 'Bill-no extraction service unavailable. Check PYTHON_EXTRACTION_API_URL and that the Python service is running.'
         : (err.message || 'Server error'),
       error: err.message
     });

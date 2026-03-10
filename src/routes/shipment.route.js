@@ -40,6 +40,22 @@ router.post(
   controller.extractFromDocuments
 );
 
+// Extract bill number from a single document (PDF or image) — calls Python purchase-tracker/bill-no
+router.post(
+  '/extract-bill-no',
+  authMiddleware,
+  authorize(['Purchase','Admin']),
+  (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      }
+      next();
+    });
+  },
+  controller.extractBillNo
+);
+
 router.post(
   '/container/planned',
   authMiddleware,

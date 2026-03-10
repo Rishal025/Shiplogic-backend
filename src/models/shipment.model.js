@@ -47,6 +47,7 @@ const shipmentSchema = new mongoose.Schema({
       
   advanceAmountDate: { type: Date },   
 
+  noOfShipments: { type: Number, default: null },
   currentStage: {
     type: String,
     enum: [
