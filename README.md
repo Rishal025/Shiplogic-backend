@@ -1,20 +1,20 @@
-# Shipment Tracker – Frontend
+# Shipment Tracker – Backend
 
-Angular web application for the Shipment Tracker: create shipments, manage planned/actual containers, documentation, clearing, and GRN.
+Node.js/Express API for the Shipment Tracker: shipments, containers (planned/actual), documentation, logistics, clearance, and GRN. Integrates with MongoDB and an optional Python extraction service for document parsing.
 
 ## Tech Stack
 
-- **Angular** 21
-- **PrimeNG** 21 (UI components)
-- **Tailwind CSS** 4
-- **NgRx** (Store, Effects, Router Store)
-- **RxJS** 7.8
-- **TypeScript** 5.9
+- **Node.js** (Express 5)
+- **MongoDB** (Mongoose 9)
+- **JWT** (jsonwebtoken) for auth
+- **Multer** for file uploads (e.g. PI/PO, BL No extraction)
+- **dotenv** for environment config
 
 ## Prerequisites
 
-- Node.js 18+ (recommended: 20+)
-- npm 10.x (or use the project’s `packageManager`)
+- Node.js 18+
+- MongoDB (local or Atlas)
+- (Optional) Python extraction service for “Extract & autopopulate” and BL No extraction
 
 ## Setup
 
@@ -22,70 +22,85 @@ Angular web application for the Shipment Tracker: create shipments, manage plann
 npm install
 ```
 
-## Development
+Create a **`.env`** file in the project root (see **Environment variables** below).
+
+## Run
 
 ```bash
 npm start
 ```
 
-Runs the app at **http://localhost:4200**. The app uses `environment.apiUrl` (see **Environment** below) for API calls.
+Runs the server on **http://localhost:5000** (or `PORT` from `.env`).
 
-## Build
-
-```bash
-npm run build
-```
-
-Production build output is in `dist/`.
-
-## Environment
-
-- **`src/environments/environment.ts`** – development (default `apiUrl: 'http://localhost:5000/api/v1'`)
-- **`src/environments/environment.prod.ts`** – production (set your backend URL)
-
-Ensure the backend is running and reachable at the configured `apiUrl`.
-
-## Project Structure (high level)
-
-- **`src/app/core/`** – models, services, interceptors (e.g. API base URL)
-- **`src/app/features/shipment/`** – shipment feature:
-  - **Create Shipment** – new shipment form; document upload + extract & autopopulate from PI/PO
-  - **Shipment Form** – multi-step form (Planned → Actual → Document Tracker → Shipment Clearing → Clearance Paid → Clearance Final → GRN)
-- **`src/app/store/shipment/`** – NgRx state, actions, effects, selectors for shipment
-- **`src/app/shared/`** – shared directives/components
-- **`src/environments/`** – `apiUrl` and other env config
-
-## Main Features
-
-- **Auth** – login; role-based access (Purchase, FAS, Logistic, Admin)
-- **Create Shipment** – form with optional PI/PO upload and “Extract & autopopulate” (calls backend extraction API)
-- **Shipment list & detail** – list shipments, open shipment and go through steps
-- **Step 2 – Shipment Tracker** – planned containers, actual containers (with BL No extraction from document)
-- **Step 3 – Document Tracker** – B/L No, Courier Track #, document dates, Bank Advance documents (upload + preview)
-- **Step 4 – Shipment Clearing Tracker** – delivery order/token/transport/customs/municipality docs + dates, delivery schedule, warehouse rows
-- **Steps 5–7** – clearance payment, clearance final, GRN
-
-## API Integration
-
-All HTTP calls go through `ShipmentService` and an HTTP interceptor that prefixes relative URLs with `environment.apiUrl`. Endpoints used include:
-
-- `GET/POST /shipment` – list, create
-- `GET /shipment/:id` – detail
-- `POST /shipment/extract-documents` – extract from PI/PO (Create Shipment)
-- `POST /shipment/extract-bill-no` – extract BL No from document
-- `POST /shipment/container/planned` – planned containers
-- `PATCH /shipment/container/actual/:id` – actual container
-- `PATCH /shipment/container/payment/:id` – Step 3 documentation
-- `PATCH /shipment/container/logistic/:id` – Step 4 logistics/clearing
-- Plus clearance payment, clearance, GRN endpoints
-
-## Tests
+Development with auto-reload:
 
 ```bash
-npm test
+npm run dev
 ```
 
-(Uses Vitest as per project config.)
+(Uses `nodemon`.)
+
+## Environment variables
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `PORT` | Server port | `5000` |
+| `MONGO_URI` | MongoDB connection string | `mongodb+srv://user:pass@host/dbname` |
+| `JWT_SECRET` | Secret for signing JWT | (any string) |
+| `PYTHON_EXTRACTION_API_URL` | Base URL of Python extraction service | `http://localhost:8096` |
+| `FRONTEND_ORIGIN` | Allowed CORS origin(s), comma-separated | `http://localhost:4200` |
+
+- **Auth**: Login returns a JWT; protected routes use `authMiddleware` and optional `authorize(roles)`.
+- **Python service**: Used for `POST /api/v1/shipment/extract-documents` (PI/PO → autopopulate) and `POST /api/v1/shipment/extract-bill-no` (single file → BL No). If not running, those endpoints will fail; other APIs work without it.
+
+## API base
+
+All shipment-related routes are under **`/api/v1/shipment`**.
+
+### Auth
+
+- `POST /api/v1/auth/login` – login (returns JWT). Include `Authorization: Bearer <token>` for protected routes.
+
+### Shipments
+
+- `GET /api/v1/shipment` – list shipments (paginated)
+- `GET /api/v1/shipment/dashboard` – summary
+- `GET /api/v1/shipment/:id` – shipment detail (with planned/actual containers)
+- `POST /api/v1/shipment/create` – create shipment (Purchase/Admin)
+
+### Document extraction (optional Python service)
+
+- `POST /api/v1/shipment/extract-documents` – `multipart/form-data`: `document1` (LPO), `document2` (PI). Returns mapped data for Create Shipment autopopulate and `shipment_calculations` (FCL, bags, pallets, price mismatch, etc.).
+- `POST /api/v1/shipment/extract-bill-no` – `multipart/form-data`: `file` (PDF/image). Returns extracted bill number for Step 2 Actual BL No.
+
+### Containers (per shipment)
+
+- `POST /api/v1/shipment/container/planned` – create/replace planned containers (Purchase/Admin)
+- `PATCH /api/v1/shipment/container/actual/:id` – add/update actual container (qtyMT, bags, BLNo, dates, etc.) (Purchase/Admin)
+- `PATCH /api/v1/shipment/container/payment/:id` – Step 3 documentation (B/L No, DHL, dates, document URLs) (FAS/Admin)
+- `PATCH /api/v1/shipment/container/logistic/:id` – Step 4 shipment clearing (doc URLs + dates, delivery schedule, warehouse schedule) (Logistic/Admin)
+- `PATCH /api/v1/shipment/container/clearence-payment/:id` – Step 5 clearance payment (FAS/Admin)
+- `PATCH /api/v1/shipment/container/clearance/:id` – Step 6 clearance final (Logistic/Admin)
+- `PATCH /api/v1/shipment/container/grn/:id` – Step 7 GRN (Purchase/Admin)
+
+Document URL fields (e.g. Step 3 and Step 4) are stored as strings; ready for future S3 integration.
+
+## Project structure (high level)
+
+- **`src/server.js`** – entry point; connects DB, starts app
+- **`src/app.js`** – Express app, CORS, body-parser, route mounting
+- **`src/config/`** – DB connection, first-admin creation
+- **`src/controller/shipment.controller.js`** – shipment + container + extraction logic
+- **`src/routes/`** – auth, supplier, item, shipment
+- **`src/models/`** – Mongoose schemas (Shipment, Container, User, etc.)
+- **`src/core/`** – auth middleware, authorize, audit logging
+
+## Roles
+
+- **Purchase** – create shipment, planned/actual, document tracker, GRN
+- **FAS** – document tracker (Step 3), clearance payment (Step 5)
+- **Logistic** – shipment clearing (Step 4), clearance final (Step 6)
+- **Admin** – all of the above
 
 ## License
 
