@@ -16,10 +16,44 @@ const actualContainerSchema = new mongoose.Schema({
   DHL: { type: String },
   docArrivalNotes: { type: String },
   BLNo: { type: String },
+  expectedDocDate: { type: Date },
+  receiver: { type: String },
+  bankAdvanceAmountDocumentUrl: { type: String },
+  bankAdvanceApprovedDocumentUrl: { type: String },
+  bankAdvanceSubmittedOn: { type: Date },
+  docToBeReleasedOn: { type: Date },
 
   shipmentArrivedOn: { type: Date },
   clearExpectedOn: { type: Date },
   clearedOn: { type: Date },
+
+  // Step 4 – Shipment Clearing Tracker (doc + date pairs; URLs for S3 later)
+  deliveryOrderDocumentUrl: { type: String },
+  deliveryOrderDate: { type: Date },
+  tokenDocumentUrl: { type: String },
+  tokenDate: { type: Date },
+  transportArrangedDocumentUrl: { type: String },
+  transportArrangedDate: { type: Date },
+  customsClearanceDocumentUrl: { type: String },
+  customsClearanceDate: { type: Date },
+  municipalityClearanceDocumentUrl: { type: String },
+  municipalityClearanceDate: { type: Date },
+
+  deliverySchedules: [{
+    deliveryDate: { type: Date },
+    deliveryNo: { type: String },
+    noOfFCL: { type: Number },
+    time: { type: String },
+    location: { type: String }
+  }],
+  warehouseSchedules: [{
+    deliveryDate: { type: Date },
+    deliveryNo: { type: String },
+    noOfFCL: { type: Number },
+    time: { type: String },
+    location: { type: String },
+    grn: { type: String }
+  }],
 
   paid_amount :{ type: Number, default: 0 },
   paidOn: { type: Date },

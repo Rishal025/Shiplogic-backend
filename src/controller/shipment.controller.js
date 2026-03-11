@@ -205,7 +205,8 @@ exports.addActualContainer = async (req, res) => {
       bags,
       updatedETD,
       updatedETA,
-      CLNo
+      CLNo,
+      BLNo
     } = req.body;
 
     
@@ -218,13 +219,17 @@ exports.addActualContainer = async (req, res) => {
       return res.status(404).json({ message: "Shipment not found" });
     }
 
+    // BLNo is sent by frontend; CLNo kept for backward compatibility
+    const billOrLadingNo = BLNo ?? CLNo;
+
     // 🔥 REPLACE ACTUAL (NOT ARRAY)
     container.actual = {
       qtyMT,
       bags,
       updatedETD,
       updatedETA,
-      CLNo,
+      CLNo: billOrLadingNo,
+      BLNo: billOrLadingNo,
       receivedOn: new Date()
     };
 
@@ -246,7 +251,7 @@ exports.addActualContainer = async (req, res) => {
 
     shipment.currentStage = "Shipment Split";
 
-    if (CLNo) shipment.CLNo = CLNo;
+    if (billOrLadingNo) shipment.CLNo = billOrLadingNo;
 
     // 🔥 AUTO CLOSE LOGIC
     if (shipment.actualQtyMT >= shipment.totalOrderedQtyMT) {
@@ -277,8 +282,16 @@ exports.addActualContainer = async (req, res) => {
 
 exports.updateFASContainer = async (req, res) => {
   try {
-   
-    const { DHL, docArrivalNotes, BLNo } = req.body;
+    const {
+      BLNo,
+      DHL,
+      expectedDocDate,
+      receiver,
+      bankAdvanceAmountDocumentUrl,
+      bankAdvanceApprovedDocumentUrl,
+      bankAdvanceSubmittedOn,
+      docToBeReleasedOn
+    } = req.body;
 
     const container = await Container.findById(req.params.id);
     if (!container) return res.status(404).json({ message: "Container not found" });
@@ -287,14 +300,18 @@ exports.updateFASContainer = async (req, res) => {
 
     const beforeUpdate = container.toObject();
 
-    // Update FAS info
-    if (DHL !== undefined) container.actual.DHL = DHL;
-    if (docArrivalNotes !== undefined) container.actual.docArrivalNotes = docArrivalNotes;
     if (BLNo !== undefined) container.actual.BLNo = BLNo;
+    if (DHL !== undefined) container.actual.DHL = DHL;
+    if (expectedDocDate !== undefined) container.actual.expectedDocDate = expectedDocDate ? new Date(expectedDocDate) : null;
+    if (receiver !== undefined) container.actual.receiver = receiver;
+    if (bankAdvanceAmountDocumentUrl !== undefined) container.actual.bankAdvanceAmountDocumentUrl = bankAdvanceAmountDocumentUrl || '';
+    if (bankAdvanceApprovedDocumentUrl !== undefined) container.actual.bankAdvanceApprovedDocumentUrl = bankAdvanceApprovedDocumentUrl || '';
+    if (bankAdvanceSubmittedOn !== undefined) container.actual.bankAdvanceSubmittedOn = bankAdvanceSubmittedOn ? new Date(bankAdvanceSubmittedOn) : null;
+    if (docToBeReleasedOn !== undefined) container.actual.docToBeReleasedOn = docToBeReleasedOn ? new Date(docToBeReleasedOn) : null;
+
     container.status = "Documented";
     await container.save();
 
-    // Optional: log audit
     await logAudit({
       userId: req.user._id,
       module: "FAS",
@@ -303,7 +320,7 @@ exports.updateFASContainer = async (req, res) => {
       action: "UpdateFASDetails",
       before: beforeUpdate,
       after: container.toObject(),
-      remarks: "FAS updated DHL/DocNotes/BLNo for container"
+      remarks: "FAS updated documentation details for container"
     });
 
     res.status(200).json({ message: "FAS details updated successfully", container });
@@ -318,8 +335,18 @@ exports.updateLogisticsDetails = async (req, res) => {
   try {
     const container = await Container.findById(req.params.id);
     const {
-      shipmentArrivedOn,
-      clearExpectedOn
+      deliveryOrderDocumentUrl,
+      deliveryOrderDate,
+      tokenDocumentUrl,
+      tokenDate,
+      transportArrangedDocumentUrl,
+      transportArrangedDate,
+      customsClearanceDocumentUrl,
+      customsClearanceDate,
+      municipalityClearanceDocumentUrl,
+      municipalityClearanceDate,
+      deliverySchedules,
+      warehouseSchedules
     } = req.body;
 
     if (!container)
@@ -328,43 +355,46 @@ exports.updateLogisticsDetails = async (req, res) => {
     if (!container.actual)
       return res.status(400).json({ message: "Actual not created yet" });
 
-    // 🔹 Update fields
-    if (shipmentArrivedOn !== undefined)
-      container.actual.shipmentArrivedOn = shipmentArrivedOn;
+    const toDate = (v) => (v ? new Date(v) : null);
 
-    if (clearExpectedOn !== undefined)
-      container.actual.clearExpectedOn = clearExpectedOn;
+    if (deliveryOrderDocumentUrl !== undefined) container.actual.deliveryOrderDocumentUrl = deliveryOrderDocumentUrl || '';
+    if (deliveryOrderDate !== undefined) container.actual.deliveryOrderDate = toDate(deliveryOrderDate);
+    if (tokenDocumentUrl !== undefined) container.actual.tokenDocumentUrl = tokenDocumentUrl || '';
+    if (tokenDate !== undefined) container.actual.tokenDate = toDate(tokenDate);
+    if (transportArrangedDocumentUrl !== undefined) container.actual.transportArrangedDocumentUrl = transportArrangedDocumentUrl || '';
+    if (transportArrangedDate !== undefined) container.actual.transportArrangedDate = toDate(transportArrangedDate);
+    if (customsClearanceDocumentUrl !== undefined) container.actual.customsClearanceDocumentUrl = customsClearanceDocumentUrl || '';
+    if (customsClearanceDate !== undefined) container.actual.customsClearanceDate = toDate(customsClearanceDate);
+    if (municipalityClearanceDocumentUrl !== undefined) container.actual.municipalityClearanceDocumentUrl = municipalityClearanceDocumentUrl || '';
+    if (municipalityClearanceDate !== undefined) container.actual.municipalityClearanceDate = toDate(municipalityClearanceDate);
+
+    if (deliverySchedules && Array.isArray(deliverySchedules)) {
+      container.actual.deliverySchedules = deliverySchedules.map((ds) => ({
+        deliveryDate: toDate(ds.deliveryDate),
+        deliveryNo: ds.deliveryNo || '',
+        noOfFCL: ds.noOfFCL,
+        time: ds.time || '',
+        location: ds.location || ''
+      }));
+    }
+    if (warehouseSchedules && Array.isArray(warehouseSchedules)) {
+      container.actual.warehouseSchedules = warehouseSchedules.map((ws) => ({
+        deliveryDate: toDate(ws.deliveryDate),
+        deliveryNo: ws.deliveryNo || '',
+        noOfFCL: ws.noOfFCL,
+        time: ws.time || '',
+        location: ws.location || '',
+        grn: ws.grn || ''
+      }));
+    }
+
     container.status = "Arrived";
-
     await container.save();
 
-    // // 🔥 Recalculate shipment totals
     const shipment = await Shipment.findById(container.shipmentId);
-    const allContainers = await Container.find({ shipmentId: shipment._id });
-
-    // shipment.actualQtyMT = allContainers.reduce(
-    //   (sum, c) => sum + (c.actual?.qtyMT || 0),
-    //   0
-    // );
-
-    // shipment.actualBags = allContainers.reduce(
-    //   (sum, c) => sum + (c.actual?.bags || 0),
-    //   0
-    // );
-
-    // // 🔥 Shipment stage control
-    // const allCleared = allContainers.every(c => c.status === "Cleared");
-    // const anyArrived = allContainers.some(c => c.status === "Arrived" || c.status === "Cleared");
-
-    // if (allCleared && allContainers.length > 0) {
-    //   shipment.currentStage = "Cleared";
-    // } else if (anyArrived) {
-    //   shipment.currentStage = "Arrived";
-    // } else {
-    //   shipment.currentStage = "In Transit";
-    // }
-
-    // await shipment.save();
+    if (!shipment) {
+      return res.status(500).json({ message: "Shipment not found" });
+    }
 
     res.status(200).json({
       message: "Logistics details updated successfully",
@@ -661,8 +691,26 @@ exports.getShipmentById = async (req, res) => {
           BLNo: a.BLNo,
           DHL: a.DHL,
           docArrivalNotes: a.docArrivalNotes,
+          expectedDocDate: a.expectedDocDate,
+          receiver: a.receiver,
+          bankAdvanceAmountDocumentUrl: a.bankAdvanceAmountDocumentUrl,
+          bankAdvanceApprovedDocumentUrl: a.bankAdvanceApprovedDocumentUrl,
+          bankAdvanceSubmittedOn: a.bankAdvanceSubmittedOn,
+          docToBeReleasedOn: a.docToBeReleasedOn,
           clearExpectedOn: a.clearExpectedOn,
           shipmentArrivedOn: a.shipmentArrivedOn,
+          deliveryOrderDocumentUrl: a.deliveryOrderDocumentUrl,
+          deliveryOrderDate: a.deliveryOrderDate,
+          tokenDocumentUrl: a.tokenDocumentUrl,
+          tokenDate: a.tokenDate,
+          transportArrangedDocumentUrl: a.transportArrangedDocumentUrl,
+          transportArrangedDate: a.transportArrangedDate,
+          customsClearanceDocumentUrl: a.customsClearanceDocumentUrl,
+          customsClearanceDate: a.customsClearanceDate,
+          municipalityClearanceDocumentUrl: a.municipalityClearanceDocumentUrl,
+          municipalityClearanceDate: a.municipalityClearanceDate,
+          deliverySchedules: a.deliverySchedules || [],
+          warehouseSchedules: a.warehouseSchedules || [],
           paid_amount: a.paid_amount,
           paidOn: a.paidOn,
           remarks: a.remarks
@@ -768,8 +816,9 @@ function mapPythonResponseToExtraction(pythonRes) {
   // Item
   if (lpo.item_code != null && lpo.item_code !== '') out.itemCode = String(lpo.item_code).trim();
 
-  // Packaging / quantity
-  if (pi.packaging != null && pi.packaging !== '') out.packagingType = String(pi.packaging).trim();
+  // Packaging / quantity (lpo_invoice.packaging e.g. "10 Kg", or performa_invoice.packaging)
+  const packaging = pi.packaging ?? lpo.packaging;
+  if (packaging != null && packaging !== '') out.packagingType = String(packaging).trim();
 
   const qtyPi = pi.quantity;
   if (qtyPi != null && qtyPi !== '') {
