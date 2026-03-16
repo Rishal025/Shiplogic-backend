@@ -6,7 +6,7 @@ const shipmentSchema = new mongoose.Schema({
   poNumber: { type: String, required: true },
   year: { type: Number, required: true },
   supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: true },
-  itemId: { type: mongoose.Schema.Types.ObjectId, ref: "Item", required: true },
+  itemId: { type: mongoose.Schema.Types.ObjectId, ref: "Item" },
 
   shipmentNo: { type: String, unique: true },
   plannedQtyMT: { type: Number, required: true },

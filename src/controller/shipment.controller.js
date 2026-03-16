@@ -32,8 +32,8 @@ exports.createShipment = async (req, res) => {
       totalSplitQtyMT
     } = req.body;
 
-    // 1️⃣ Basic validation
-    if (!poNumber || !orderDate || !supplierId || !itemId || !plannedQtyMT || !piNo || !incoterms || !buyunit || !paymentTerms || !totalSplitQtyMT) {
+    // 1️⃣ Basic validation (itemId now optional)
+    if (!poNumber || !orderDate || !supplierId || !plannedQtyMT || !piNo || !incoterms || !buyunit || !paymentTerms || !totalSplitQtyMT) {
       return res.status(400).json({ message: "Required fields missing" });
     }
 
@@ -43,19 +43,10 @@ exports.createShipment = async (req, res) => {
       return res.status(400).json({ message: "Invalid supplier" });
     }
 
-    // 3️⃣ Validate item
-    const item = await Item.findById(itemId);
-    if (!item) {
-      return res.status(400).json({ message: "Invalid item" });
-    }
-
-    // 4️⃣ Auto shipment number generation
+    // 3️⃣ Auto shipment number generation
     const count = await Shipment.countDocuments({ poNumber, year });
-    const packingMatch = item.description.match(/(\d+\s*Kg)/i);
-    const packingInfo = packingMatch ? packingMatch[1] : "";
-
-    // Auto generate shipment number
-    const shipmentNo = `${poNumber}- ${packingInfo}-${count+1}(${plannedQtyMT}MT)`;
+    // Auto generate shipment number (no item dependency)
+    const shipmentNo = `${poNumber}-${count + 1}(${plannedQtyMT}MT)`;
 
     let yearStr = new Date(orderDate).getFullYear();
 
@@ -64,13 +55,12 @@ exports.createShipment = async (req, res) => {
 
     const totalAmount = qty * rate;
 
-    // 5️⃣ Create shipment
+    // 4️⃣ Create shipment
     const shipment = await Shipment.create({
       poNumber,
       year:yearStr,
       orderDate,
       supplierId,
-      itemId,
       shipmentNo,
       plannedQtyMT:qty,
       estimatedContainerCount,
@@ -741,8 +731,8 @@ exports.getShipmentById = async (req, res) => {
         item: shipment.itemId
           ? `${shipment.itemId.itemCode} - ${shipment.itemId.description}`
           : null,
-        riceName:shipment.itemId.riceName,
-        packing:shipment.itemId.packing,
+        riceName: shipment.itemId?.riceName,
+        packing: shipment.itemId?.packing,
         piNo: shipment.piNo,
         totalOrderedQtyMT: shipment.totalOrderedQtyMT,
         plannedQtyMT: shipment.plannedQtyMT,
