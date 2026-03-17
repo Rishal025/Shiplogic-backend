@@ -7,8 +7,8 @@ async function databaseConnect(url) {
     await mongoose.connect(url); // no extra options needed in Mongoose v6+
     console.log('✅ Database connected');
   } catch (err) {
-    console.error('❌ Database connection error:', err);
-    process.exit(1); // exit process if DB connection fails
+    console.error('❌ Database connection error:', err.message);
+    // Don't exit process, let the server stay alive
   }
 }
 
