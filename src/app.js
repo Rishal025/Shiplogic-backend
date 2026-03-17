@@ -1,7 +1,6 @@
 // src/app.js
 const express = require('express');
 const bodyParser = require('body-parser');
-const cors = require('cors');
 
 const authRoutes = require('./routes/auth.route');
 const supplierRoutes = require('./routes/supplier.route');
@@ -11,15 +10,22 @@ const shipmentRoutes = require('./routes/shipment.route');
 
 const app = express();
 
-const corsOptions = {
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-};
+// ─── Manual CORS middleware ───────────────────────────────────────────────────
+// Using raw headers instead of the cors package to guarantee compatibility
+// with Express 5. This runs on EVERY request before any auth middleware.
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-app.use(cors(corsOptions));
-// Handle preflight OPTIONS requests BEFORE any auth middleware runs
-app.options(/.*/, cors(corsOptions));
+  // Respond immediately to OPTIONS preflight — never let it reach auth middleware
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  next();
+});
+// ─────────────────────────────────────────────────────────────────────────────
 
 app.use(bodyParser.json());
 
