@@ -11,15 +11,16 @@ const shipmentRoutes = require('./routes/shipment.route');
 
 const app = express();
 
-// Allow frontend origin(s). Comma-separated in FRONTEND_ORIGIN, or default to dev server
-const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:4200').split(',').map(s => s.trim());
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-    cb(null, false);
-  },
-  credentials: true
-}));
+const corsOptions = {
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+app.use(cors(corsOptions));
+// Handle preflight OPTIONS requests BEFORE any auth middleware runs
+app.options(/.*/, cors(corsOptions));
+
 app.use(bodyParser.json());
 
 // Routes
