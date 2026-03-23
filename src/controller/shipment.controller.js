@@ -4,19 +4,75 @@ const Container = require('../models/container.model');
 const Supplier = require('../models/supplier.model');
 const Item = require('../models/item.model');
 const logAudit = require('../models/auditLog.model');
+const { uploadBufferToS3, createSignedGetUrl } = require('../core/utils/s3Upload');
 const mongoose = require('mongoose');
+
+const parseJsonField = (value) => {
+  if (value == null || value === '') return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const normalizeUploadedFiles = (files) => {
+  if (!files) return {};
+  if (!Array.isArray(files)) return files;
+
+  return files.reduce((acc, file) => {
+    if (!file?.fieldname) return acc;
+    if (!acc[file.fieldname]) {
+      acc[file.fieldname] = [];
+    }
+    acc[file.fieldname].push(file);
+    return acc;
+  }, {});
+};
+
+const toDateOrNull = (value) => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const toSignedDocument = async (url, name, expiresIn = 900) => {
+  if (!url) return { url: null, name: name || null };
+  const signedUrl = await createSignedGetUrl(url, expiresIn).catch(() => url);
+  return { url: signedUrl, name: name || null };
+};
+
+const toPlainObject = (value) => {
+  if (value && typeof value.toObject === 'function') {
+    return value.toObject();
+  }
+  return value;
+};
 
 exports.createShipment = async (req, res) => {
   try {
-
     const {
       orderDate,
       poNumber,
       year,
       supplierId,
+      supplierName,
       piNo,
       fpoNo,
       itemId,
+      itemCode,
+      itemDescription,
+      commodity,
+      countryOfOrigin,
+      brandName,
+      barcode,
+      variant,
+      hsCode,
+      packing,
+      portOfLoading,
+      portOfDischarge,
       plannedQtyMT,
       estimatedContainerCount,
       estimatedContainerSize,
@@ -25,65 +81,130 @@ exports.createShipment = async (req, res) => {
       fcPerUnit,
       totalFC,
       paymentTerms,
+      bankName,
       advanceAmount,
       advanceAmountDate,
       incoterms,
       buyunit,
-      totalSplitQtyMT
+      totalSplitQtyMT,
+      q1Report
     } = req.body;
 
+    const files = req.files || {};
+    const lpoDocument = files?.lpoDocument?.[0];
+    const proformaDocument = files?.proformaDocument?.[0];
+    const s1QualityReport = files?.s1QualityReport?.[0];
+
     // 1️⃣ Basic validation (itemId now optional)
-    if (!poNumber || !orderDate || !supplierId || !plannedQtyMT || !piNo || !incoterms || !buyunit || !paymentTerms || !totalSplitQtyMT) {
+    const parsedQ1Report = parseJsonField(q1Report);
+
+    if (!poNumber || !orderDate || !(supplierId || supplierName) || !plannedQtyMT || !piNo || !incoterms || !buyunit || !paymentTerms || !totalSplitQtyMT) {
       return res.status(400).json({ message: "Required fields missing" });
+    }
+    if (!lpoDocument || !proformaDocument || !s1QualityReport) {
+      return res.status(400).json({
+        message: 'All 3 documents are required: lpoDocument, proformaDocument, s1QualityReport'
+      });
     }
 
     // 2️⃣ Validate supplier
-    const supplier = await Supplier.findById(supplierId);
-    if (!supplier) {
-      return res.status(400).json({ message: "Invalid supplier" });
+    let supplier = null;
+    if (supplierId) {
+      supplier = await Supplier.findById(supplierId);
+      if (!supplier) {
+        return res.status(400).json({ message: "Invalid supplier" });
+      }
     }
 
-    // 3️⃣ Auto shipment number generation
-    const count = await Shipment.countDocuments({ poNumber, year });
-    // Auto generate shipment number (no item dependency)
-    const shipmentNo = `${poNumber}-${count + 1}(${plannedQtyMT}MT)`;
+    // 3️⃣ Auto PO number generation: RHST + YY + MM + running 3-digit sequence (monthly)
+    const orderDateObj = orderDate ? new Date(orderDate) : new Date();
+    if (Number.isNaN(orderDateObj.getTime())) {
+      return res.status(400).json({ message: 'Invalid orderDate' });
+    }
 
-    let yearStr = new Date(orderDate).getFullYear();
+    const yy = String(orderDateObj.getFullYear()).slice(-2);
+    const mm = String(orderDateObj.getMonth() + 1).padStart(2, '0');
+    const monthStart = new Date(orderDateObj.getFullYear(), orderDateObj.getMonth(), 1, 0, 0, 0, 0);
+    const nextMonthStart = new Date(orderDateObj.getFullYear(), orderDateObj.getMonth() + 1, 1, 0, 0, 0, 0);
+
+    const monthCount = await Shipment.countDocuments({
+      orderDate: { $gte: monthStart, $lt: nextMonthStart }
+    });
+
+    let runningNo = monthCount + 1;
+    let autoPoNumber = `RHST${yy}${mm}${String(runningNo).padStart(3, '0')}`;
+    while (await Shipment.exists({ poNumber: autoPoNumber })) {
+      runningNo += 1;
+      autoPoNumber = `RHST${yy}${mm}${String(runningNo).padStart(3, '0')}`;
+    }
+
+    // Auto generate shipment number from generated PO number
+    const shipmentNo = `${autoPoNumber}-${1}(${plannedQtyMT}MT)`;
+
+    const yearStr = orderDateObj.getFullYear();
 
     const qty = Number(plannedQtyMT) || 0;
     const rate = Number(fcPerUnit) || 0;
 
     const totalAmount = qty * rate;
 
-    // 4️⃣ Create shipment
+    // 4️⃣ Upload all mandatory documents to S3
+    const [lpoUpload, proformaUpload, s1Upload] = await Promise.all([
+      uploadBufferToS3(lpoDocument, 'shipments/lpo'),
+      uploadBufferToS3(proformaDocument, 'shipments/proforma'),
+      uploadBufferToS3(s1QualityReport, 'shipments/quality/s1')
+    ]);
+
+    // 5️⃣ Create shipment with persisted document URLs
     const shipment = await Shipment.create({
-      poNumber,
-      year:yearStr,
+      poNumber: autoPoNumber,
+      year: yearStr,
       orderDate,
-      supplierId,
+      supplierId: supplier?._id,
+      supplierName: supplierName || supplier?.name || '',
+      itemId: itemId || undefined,
+      itemCode: itemCode || '',
+      itemDescription: itemDescription || '',
+      commodity: commodity || '',
+      countryOfOrigin: countryOfOrigin || '',
+      brandName: brandName || '',
+      barcode: barcode || '',
+      variant: variant || '',
+      hsCode: hsCode || '',
+      packing: packing || '',
+      portOfLoading: portOfLoading || '',
+      portOfDischarge: portOfDischarge || '',
       shipmentNo,
-      plannedQtyMT:qty,
+      plannedQtyMT: qty,
       estimatedContainerCount,
       estimatedContainerSize,
       plannedETD,
       plannedETA,
       piNo,
       fpoNo,
-      fcPerUnit:rate,
+      fcPerUnit: rate,
       totalFC,
       paymentTerms,
+      bankName: bankName || '',
       advanceAmount,
       advanceAmountDate,
+      q1Report: parsedQ1Report,
+      lpoDocumentName: lpoUpload.fileName,
+      lpoDocumentUrl: lpoUpload.url,
+      proformaDocumentName: proformaUpload.fileName,
+      proformaDocumentUrl: proformaUpload.url,
+      s1QualityReportName: s1Upload.fileName,
+      s1QualityReportUrl: s1Upload.url,
       payment: {
-            totalAmount,   // from req.body
-            paidAmount: 0,                   // initially 0
-            balanceAmount: totalAmount, // initially same as total
-            paymentStatus: "Pending"         // default
-        },
-    incoterms,
-    buyunit,
-    totalSplitQtyMT,
-    containersize:estimatedContainerSize
+        totalAmount,   // from req.body
+        paidAmount: 0,                   // initially 0
+        balanceAmount: totalAmount, // initially same as total
+        paymentStatus: "Pending"         // default
+      },
+      incoterms,
+      buyunit,
+      totalSplitQtyMT,
+      containersize: estimatedContainerSize
     });
 
     // 6️⃣ Audit log
@@ -100,7 +221,12 @@ exports.createShipment = async (req, res) => {
 
     return res.status(201).json({
       message: "Shipment created successfully",
-      data: shipment
+      data: shipment,
+      documents: {
+        lpo: { name: lpoUpload.fileName, url: lpoUpload.url },
+        proforma: { name: proformaUpload.fileName, url: proformaUpload.url },
+        s1QualityReport: { name: s1Upload.fileName, url: s1Upload.url }
+      }
     });
 
   } catch (error) {
@@ -191,15 +317,30 @@ exports.addActualContainer = async (req, res) => {
 
 
     const {
+      actualSerialNo,
+      commercialInvoiceNo,
+      shipOnBoardDate,
       qtyMT,
       bags,
+      pallet,
       updatedETD,
       updatedETA,
       CLNo,
-      BLNo
+      BLNo,
+      portOfLoading,
+      portOfDischarge,
+      noOfContainers,
+      noOfBags,
+      quantityByMt,
+      shippingLine,
+      freeDetentionDays,
+      maximumDetentionDays,
+      freightPrepared,
+      billExtractionData,
+      extractedContainers
     } = req.body;
 
-    
+
     if (!container) {
       return res.status(404).json({ message: "Container not found" });
     }
@@ -214,12 +355,35 @@ exports.addActualContainer = async (req, res) => {
 
     // 🔥 REPLACE ACTUAL (NOT ARRAY)
     container.actual = {
+      ...(container.actual?.toObject ? container.actual.toObject() : container.actual || {}),
+      actualSerialNo,
+      commercialInvoiceNo,
+      shipOnBoardDate: shipOnBoardDate ? new Date(shipOnBoardDate) : null,
+      size: container.planned?.size,
+      FCL: container.planned?.FCL,
       qtyMT,
       bags,
+      pallet,
       updatedETD,
       updatedETA,
       CLNo: billOrLadingNo,
       BLNo: billOrLadingNo,
+      portOfLoading: portOfLoading || container.actual?.portOfLoading || '',
+      portOfDischarge: portOfDischarge || container.actual?.portOfDischarge || '',
+      noOfContainers: Number(noOfContainers) || container.actual?.noOfContainers || 0,
+      noOfBags: Number(noOfBags) || Number(bags) || container.actual?.noOfBags || 0,
+      quantityByMt: Number(quantityByMt) || Number(qtyMT) || container.actual?.quantityByMt || 0,
+      shippingLine: shippingLine || container.actual?.shippingLine || '',
+      freeDetentionDays: Number(freeDetentionDays) || container.actual?.freeDetentionDays || 0,
+      maximumDetentionDays: Number(maximumDetentionDays) || container.actual?.maximumDetentionDays || 0,
+      freightPrepared: freightPrepared || container.actual?.freightPrepared || 'No',
+      billExtractionData: billExtractionData || container.actual?.billExtractionData || null,
+      extractedContainers: Array.isArray(extractedContainers)
+        ? extractedContainers.map((row) => ({
+            containerNo: row.containerNo || row.container_no || '',
+            pkgCt: Number(row.pkgCt ?? row.pkg_ct) || 0
+          }))
+        : container.actual?.extractedContainers || [],
       receivedOn: new Date()
     };
 
@@ -269,14 +433,114 @@ exports.addActualContainer = async (req, res) => {
   }
 };
 
+exports.updateBLDetails = async (req, res) => {
+  try {
+    const container = await Container.findById(req.params.id);
+    if (!container) {
+      return res.status(404).json({ message: 'Container not found' });
+    }
+
+    if (!container.actual) {
+      container.actual = {
+        size: container.planned?.size,
+        FCL: container.planned?.FCL,
+        qtyMT: container.planned?.qtyMT || 0,
+        bags: container.planned?.bags || 0
+      };
+    }
+
+    const files = req.files || {};
+    const costSheetBookingDocument = files?.costSheetBookingDocument?.[0];
+
+    const {
+      blNo,
+      shippedOnBoard,
+      portOfLoading,
+      portOfDischarge,
+      noOfContainers,
+      noOfBags,
+      quantityByMt,
+      shippingLine,
+      freeDetentionDays,
+      maximumDetentionDays,
+      freightPrepared,
+      costSheetBookings,
+      storageAllocations
+    } = req.body;
+
+    const parsedCostSheetBookings = parseJsonField(costSheetBookings);
+    const parsedStorageAllocations = parseJsonField(storageAllocations);
+
+    if (blNo !== undefined) {
+      container.actual.BLNo = blNo || '';
+      container.actual.CLNo = blNo || '';
+    }
+    if (shippedOnBoard !== undefined) container.actual.shipOnBoardDate = toDateOrNull(shippedOnBoard);
+    if (portOfLoading !== undefined) container.actual.portOfLoading = portOfLoading || '';
+    if (portOfDischarge !== undefined) container.actual.portOfDischarge = portOfDischarge || '';
+    if (noOfContainers !== undefined) container.actual.noOfContainers = Number(noOfContainers) || 0;
+    if (noOfBags !== undefined) container.actual.noOfBags = Number(noOfBags) || 0;
+    if (quantityByMt !== undefined) container.actual.quantityByMt = Number(quantityByMt) || 0;
+    if (shippingLine !== undefined) container.actual.shippingLine = shippingLine || '';
+    if (freeDetentionDays !== undefined) container.actual.freeDetentionDays = Number(freeDetentionDays) || 0;
+    if (maximumDetentionDays !== undefined) container.actual.maximumDetentionDays = Number(maximumDetentionDays) || 0;
+    if (freightPrepared !== undefined) container.actual.freightPrepared = freightPrepared || 'No';
+    if (Array.isArray(parsedCostSheetBookings)) {
+      container.actual.costSheetBookings = parsedCostSheetBookings.map((row) => ({
+        sn: Number(row.sn) || 0,
+        description: row.description || '',
+        requestAmount: Number(row.requestAmount) || 0,
+        paidAmount: Number(row.paidAmount) || 0
+      }));
+    }
+    if (Array.isArray(parsedStorageAllocations)) {
+      container.actual.storageAllocations = parsedStorageAllocations.map((row) => ({
+        sn: Number(row.sn) || 0,
+        containerSerialNo: row.containerSerialNo || '',
+        warehouse: row.warehouse || '',
+        storageAvailability: Number(row.storageAvailability) || 0
+      }));
+    }
+
+    if (costSheetBookingDocument) {
+      const uploaded = await uploadBufferToS3(costSheetBookingDocument, 'shipments/bl/cost-sheet');
+      container.actual.costSheetBookingDocumentUrl = uploaded.url;
+      container.actual.costSheetBookingDocumentName = uploaded.fileName;
+    }
+
+    await container.save();
+
+    res.status(200).json({
+      message: 'B/L details updated successfully',
+      container
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
 
 exports.updateFASContainer = async (req, res) => {
   try {
+    const files = req.files || {};
+    const inwardCollectionAdviceDocument = files?.inwardCollectionAdviceDocument?.[0];
+    const murabahaContractSubmittedDocument = files?.murabahaContractSubmittedDocument?.[0];
+    const documentsReleasedDocument = files?.documentsReleasedDocument?.[0];
+
     const {
       BLNo,
       DHL,
       expectedDocDate,
       receiver,
+      courierTrackNo,
+      courierServiceProvider,
+      bankName,
+      inwardCollectionAdviceDate,
+      murabahaContractReleasedDate,
+      murabahaContractApprovedDate,
+      murabahaContractSubmittedDate,
+      documentsReleasedDate,
       bankAdvanceAmountDocumentUrl,
       bankAdvanceApprovedDocumentUrl,
       bankAdvanceSubmittedOn,
@@ -292,12 +556,36 @@ exports.updateFASContainer = async (req, res) => {
 
     if (BLNo !== undefined) container.actual.BLNo = BLNo;
     if (DHL !== undefined) container.actual.DHL = DHL;
-    if (expectedDocDate !== undefined) container.actual.expectedDocDate = expectedDocDate ? new Date(expectedDocDate) : null;
+    if (courierTrackNo !== undefined) container.actual.courierTrackNo = courierTrackNo || '';
+    if (courierServiceProvider !== undefined) container.actual.courierServiceProvider = courierServiceProvider || '';
+    if (expectedDocDate !== undefined) container.actual.expectedDocDate = toDateOrNull(expectedDocDate);
     if (receiver !== undefined) container.actual.receiver = receiver;
+    if (bankName !== undefined) container.actual.bankName = bankName || '';
+    if (inwardCollectionAdviceDate !== undefined) container.actual.inwardCollectionAdviceDate = toDateOrNull(inwardCollectionAdviceDate);
+    if (murabahaContractReleasedDate !== undefined) container.actual.murabahaContractReleasedDate = toDateOrNull(murabahaContractReleasedDate);
+    if (murabahaContractApprovedDate !== undefined) container.actual.murabahaContractApprovedDate = toDateOrNull(murabahaContractApprovedDate);
+    if (murabahaContractSubmittedDate !== undefined) container.actual.murabahaContractSubmittedDate = toDateOrNull(murabahaContractSubmittedDate);
+    if (documentsReleasedDate !== undefined) container.actual.documentsReleasedDate = toDateOrNull(documentsReleasedDate);
     if (bankAdvanceAmountDocumentUrl !== undefined) container.actual.bankAdvanceAmountDocumentUrl = bankAdvanceAmountDocumentUrl || '';
     if (bankAdvanceApprovedDocumentUrl !== undefined) container.actual.bankAdvanceApprovedDocumentUrl = bankAdvanceApprovedDocumentUrl || '';
-    if (bankAdvanceSubmittedOn !== undefined) container.actual.bankAdvanceSubmittedOn = bankAdvanceSubmittedOn ? new Date(bankAdvanceSubmittedOn) : null;
-    if (docToBeReleasedOn !== undefined) container.actual.docToBeReleasedOn = docToBeReleasedOn ? new Date(docToBeReleasedOn) : null;
+    if (bankAdvanceSubmittedOn !== undefined) container.actual.bankAdvanceSubmittedOn = toDateOrNull(bankAdvanceSubmittedOn);
+    if (docToBeReleasedOn !== undefined) container.actual.docToBeReleasedOn = toDateOrNull(docToBeReleasedOn);
+
+    if (inwardCollectionAdviceDocument) {
+      const uploaded = await uploadBufferToS3(inwardCollectionAdviceDocument, 'shipments/document-tracker/inward-advice');
+      container.actual.inwardCollectionAdviceDocumentUrl = uploaded.url;
+      container.actual.inwardCollectionAdviceDocumentName = uploaded.fileName;
+    }
+    if (murabahaContractSubmittedDocument) {
+      const uploaded = await uploadBufferToS3(murabahaContractSubmittedDocument, 'shipments/document-tracker/murabaha-submitted');
+      container.actual.murabahaContractSubmittedDocumentUrl = uploaded.url;
+      container.actual.murabahaContractSubmittedDocumentName = uploaded.fileName;
+    }
+    if (documentsReleasedDocument) {
+      const uploaded = await uploadBufferToS3(documentsReleasedDocument, 'shipments/document-tracker/documents-released');
+      container.actual.documentsReleasedDocumentUrl = uploaded.url;
+      container.actual.documentsReleasedDocumentName = uploaded.fileName;
+    }
 
     container.status = "Documented";
     await container.save();
@@ -324,7 +612,23 @@ exports.updateFASContainer = async (req, res) => {
 exports.updateLogisticsDetails = async (req, res) => {
   try {
     const container = await Container.findById(req.params.id);
+    const files = req.files || {};
     const {
+      arrivalOn,
+      shipmentFreeRetentionDate,
+      portRetentionWithPenaltyDate,
+      arrivalNoticeDate,
+      advanceRequestDate,
+      doReleasedDate,
+      doReleasedRemarks,
+      dpApprovalDate,
+      dpApprovalRemarks,
+      customsClearanceDate,
+      customsClearanceRemarks,
+      tokenReceivedDate,
+      municipalityDate,
+      municipalityRemarks,
+      transportationBooked,
       deliveryOrderDocumentUrl,
       deliveryOrderDate,
       tokenDocumentUrl,
@@ -332,7 +636,6 @@ exports.updateLogisticsDetails = async (req, res) => {
       transportArrangedDocumentUrl,
       transportArrangedDate,
       customsClearanceDocumentUrl,
-      customsClearanceDate,
       municipalityClearanceDocumentUrl,
       municipalityClearanceDate,
       deliverySchedules,
@@ -345,31 +648,99 @@ exports.updateLogisticsDetails = async (req, res) => {
     if (!container.actual)
       return res.status(400).json({ message: "Actual not created yet" });
 
-    const toDate = (v) => (v ? new Date(v) : null);
+    const parsedTransportationBooked = parseJsonField(transportationBooked);
+    const parsedDeliverySchedules = parseJsonField(deliverySchedules);
+    const parsedWarehouseSchedules = parseJsonField(warehouseSchedules);
+
+    if (arrivalOn !== undefined) container.actual.arrivalOn = toDateOrNull(arrivalOn);
+    if (shipmentFreeRetentionDate !== undefined) container.actual.shipmentFreeRetentionDate = toDateOrNull(shipmentFreeRetentionDate);
+    if (portRetentionWithPenaltyDate !== undefined) container.actual.portRetentionWithPenaltyDate = toDateOrNull(portRetentionWithPenaltyDate);
+    if (arrivalNoticeDate !== undefined) container.actual.arrivalNoticeDate = toDateOrNull(arrivalNoticeDate);
+    if (advanceRequestDate !== undefined) container.actual.advanceRequestDate = toDateOrNull(advanceRequestDate);
+    if (doReleasedDate !== undefined) container.actual.doReleasedDate = toDateOrNull(doReleasedDate);
+    if (doReleasedRemarks !== undefined) container.actual.doReleasedRemarks = doReleasedRemarks || '';
+    if (dpApprovalDate !== undefined) container.actual.dpApprovalDate = toDateOrNull(dpApprovalDate);
+    if (dpApprovalRemarks !== undefined) container.actual.dpApprovalRemarks = dpApprovalRemarks || '';
+    if (customsClearanceDate !== undefined) container.actual.customsClearanceDate = toDateOrNull(customsClearanceDate);
+    if (customsClearanceRemarks !== undefined) container.actual.customsClearanceRemarks = customsClearanceRemarks || '';
+    if (tokenReceivedDate !== undefined) container.actual.tokenReceivedDate = toDateOrNull(tokenReceivedDate);
+    if (municipalityDate !== undefined) container.actual.municipalityDate = toDateOrNull(municipalityDate);
+    if (municipalityRemarks !== undefined) container.actual.municipalityRemarks = municipalityRemarks || '';
 
     if (deliveryOrderDocumentUrl !== undefined) container.actual.deliveryOrderDocumentUrl = deliveryOrderDocumentUrl || '';
-    if (deliveryOrderDate !== undefined) container.actual.deliveryOrderDate = toDate(deliveryOrderDate);
+    if (deliveryOrderDate !== undefined) container.actual.deliveryOrderDate = toDateOrNull(deliveryOrderDate);
     if (tokenDocumentUrl !== undefined) container.actual.tokenDocumentUrl = tokenDocumentUrl || '';
-    if (tokenDate !== undefined) container.actual.tokenDate = toDate(tokenDate);
+    if (tokenDate !== undefined) container.actual.tokenDate = toDateOrNull(tokenDate);
     if (transportArrangedDocumentUrl !== undefined) container.actual.transportArrangedDocumentUrl = transportArrangedDocumentUrl || '';
-    if (transportArrangedDate !== undefined) container.actual.transportArrangedDate = toDate(transportArrangedDate);
+    if (transportArrangedDate !== undefined) container.actual.transportArrangedDate = toDateOrNull(transportArrangedDate);
     if (customsClearanceDocumentUrl !== undefined) container.actual.customsClearanceDocumentUrl = customsClearanceDocumentUrl || '';
-    if (customsClearanceDate !== undefined) container.actual.customsClearanceDate = toDate(customsClearanceDate);
+    if (customsClearanceDate !== undefined) container.actual.customsClearanceDate = toDateOrNull(customsClearanceDate);
     if (municipalityClearanceDocumentUrl !== undefined) container.actual.municipalityClearanceDocumentUrl = municipalityClearanceDocumentUrl || '';
-    if (municipalityClearanceDate !== undefined) container.actual.municipalityClearanceDate = toDate(municipalityClearanceDate);
+    if (municipalityClearanceDate !== undefined) container.actual.municipalityClearanceDate = toDateOrNull(municipalityClearanceDate);
 
-    if (deliverySchedules && Array.isArray(deliverySchedules)) {
-      container.actual.deliverySchedules = deliverySchedules.map((ds) => ({
-        deliveryDate: toDate(ds.deliveryDate),
+    const arrivalNoticeDocument = files?.arrivalNoticeDocument?.[0];
+    const advanceRequestDocument = files?.advanceRequestDocument?.[0];
+    const doReleasedDocument = files?.doReleasedDocument?.[0];
+    const dpApprovalDocument = files?.dpApprovalDocument?.[0];
+    const customsClearanceDocument = files?.customsClearanceDocument?.[0];
+    const municipalityDocument = files?.municipalityDocument?.[0];
+
+    if (arrivalNoticeDocument) {
+      const uploaded = await uploadBufferToS3(arrivalNoticeDocument, 'shipments/logistics/arrival-notice');
+      container.actual.arrivalNoticeDocumentUrl = uploaded.url;
+      container.actual.arrivalNoticeDocumentName = uploaded.fileName;
+    }
+    if (advanceRequestDocument) {
+      const uploaded = await uploadBufferToS3(advanceRequestDocument, 'shipments/logistics/advance-request');
+      container.actual.advanceRequestDocumentUrl = uploaded.url;
+      container.actual.advanceRequestDocumentName = uploaded.fileName;
+    }
+    if (doReleasedDocument) {
+      const uploaded = await uploadBufferToS3(doReleasedDocument, 'shipments/logistics/do-released');
+      container.actual.doReleasedDocumentUrl = uploaded.url;
+      container.actual.doReleasedDocumentName = uploaded.fileName;
+    }
+    if (dpApprovalDocument) {
+      const uploaded = await uploadBufferToS3(dpApprovalDocument, 'shipments/logistics/dp-approval');
+      container.actual.dpApprovalDocumentUrl = uploaded.url;
+      container.actual.dpApprovalDocumentName = uploaded.fileName;
+    }
+    if (customsClearanceDocument) {
+      const uploaded = await uploadBufferToS3(customsClearanceDocument, 'shipments/logistics/customs-clearance');
+      container.actual.customsClearanceDocumentUrl = uploaded.url;
+      container.actual.customsClearanceDocumentName = uploaded.fileName;
+    }
+    if (municipalityDocument) {
+      const uploaded = await uploadBufferToS3(municipalityDocument, 'shipments/logistics/municipality');
+      container.actual.municipalityDocumentUrl = uploaded.url;
+      container.actual.municipalityDocumentName = uploaded.fileName;
+    }
+
+    if (Array.isArray(parsedTransportationBooked)) {
+      container.actual.transportationBooked = parsedTransportationBooked.map((row) => ({
+        sn: Number(row.sn) || 0,
+        containerSerialNo: row.containerSerialNo || '',
+        transportCompanyName: row.transportCompanyName || '',
+        bookedDate: toDateOrNull(row.bookedDate),
+        bookingTime: row.bookingTime || '',
+        transportDate: toDateOrNull(row.transportDate),
+        transportTime: row.transportTime || '',
+        delayHours: Number(row.delayHours) || 0
+      }));
+    }
+
+    if (Array.isArray(parsedDeliverySchedules)) {
+      container.actual.deliverySchedules = parsedDeliverySchedules.map((ds) => ({
+        deliveryDate: toDateOrNull(ds.deliveryDate),
         deliveryNo: ds.deliveryNo || '',
         noOfFCL: ds.noOfFCL,
         time: ds.time || '',
         location: ds.location || ''
       }));
     }
-    if (warehouseSchedules && Array.isArray(warehouseSchedules)) {
-      container.actual.warehouseSchedules = warehouseSchedules.map((ws) => ({
-        deliveryDate: toDate(ws.deliveryDate),
+    if (Array.isArray(parsedWarehouseSchedules)) {
+      container.actual.warehouseSchedules = parsedWarehouseSchedules.map((ws) => ({
+        deliveryDate: toDateOrNull(ws.deliveryDate),
         deliveryNo: ws.deliveryNo || '',
         noOfFCL: ws.noOfFCL,
         time: ws.time || '',
@@ -427,7 +798,7 @@ exports.addContainerPayment = async (req, res) => {
       0
     );
 
-   
+
     if (shipmentTotalPaid + paid_amount > shipment.payment?.totalAmount) {
       return res.status(400).json({
         message: "Payment exceeds shipment invoice amount"
@@ -509,7 +880,7 @@ exports.addContainerGRN = async (req, res) => {
 
     if (!grnNo || !grnDate) return res.status(400).json({ message: "GRN No and GRN Date required" });
 
-    
+
     if (!container) return res.status(404).json({ message: "Container not found" });
 
     // 🔥 Ensure container has actual and is cleared
@@ -536,6 +907,171 @@ exports.addContainerGRN = async (req, res) => {
       containerActual: container.actual
     });
 
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.updateStorageDetails = async (req, res) => {
+  try {
+    const container = await Container.findById(req.params.id);
+    if (!container) return res.status(404).json({ message: 'Container not found' });
+    if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
+
+    const { storageSplits } = req.body;
+    const parsedStorageSplits = parseJsonField(storageSplits);
+    if (!Array.isArray(parsedStorageSplits)) {
+      return res.status(400).json({ message: 'storageSplits must be an array' });
+    }
+
+    container.actual.storageSplits = parsedStorageSplits.map((row) => ({
+      containerSerialNo: row.containerSerialNo || '',
+      warehouse: row.warehouse || '',
+      storageAvailability: Number(row.storageAvailability) || 0,
+      receivedOnDate: toDateOrNull(row.receivedOnDate),
+      receivedOnTime: row.receivedOnTime || '',
+      customsInspection: row.customsInspection || 'No',
+      grn: row.grn || '',
+      batch: row.batch || '',
+      productionDate: toDateOrNull(row.productionDate),
+      expiryDate: toDateOrNull(row.expiryDate),
+      remarks: row.remarks || ''
+    }));
+
+    await container.save();
+    res.status(200).json({ message: 'Storage details updated successfully', container });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.updateQualityDetails = async (req, res) => {
+  try {
+    const container = await Container.findById(req.params.id);
+    if (!container) return res.status(404).json({ message: 'Container not found' });
+    if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
+
+    const files = normalizeUploadedFiles(req.files);
+    const { qualityRows, qualityReports } = req.body;
+    const parsedQualityRows = parseJsonField(qualityRows);
+    const parsedQualityReports = parseJsonField(qualityReports);
+
+    const uploadedByField = {};
+    for (const [field, list] of Object.entries(files)) {
+      const file = Array.isArray(list) ? list[0] : null;
+      if (!file) continue;
+      const uploaded = await uploadBufferToS3(file, `shipments/quality/${field}`);
+      uploadedByField[field] = uploaded;
+    }
+
+    if (Array.isArray(parsedQualityRows)) {
+      container.actual.qualityRows = parsedQualityRows.map((row, index) => {
+        const inhouseUpload = uploadedByField[`qualityRows_${index}_inhouse`];
+        const strategicUpload = uploadedByField[`qualityRows_${index}_strategic`];
+        const thirdPartyUpload = uploadedByField[`qualityRows_${index}_thirdParty`];
+        const existing = container.actual?.qualityRows?.[index] || {};
+        return {
+          sn: Number(row.sn) || index + 1,
+          sampleNo: row.sampleNo || '',
+          phase: row.phase || 'S1',
+          date: toDateOrNull(row.date),
+          inhouseReportNo: row.inhouseReportNo || '',
+          inhouseReportDate: toDateOrNull(row.inhouseReportDate),
+          inhouseReportDocumentUrl: inhouseUpload?.url || row.inhouseReportDocumentUrl || existing.inhouseReportDocumentUrl || '',
+          inhouseReportDocumentName: inhouseUpload?.fileName || row.inhouseReportDocumentName || existing.inhouseReportDocumentName || '',
+          strategicReportNo: row.strategicReportNo || '',
+          strategicReportDate: toDateOrNull(row.strategicReportDate),
+          strategicReportDocumentUrl: strategicUpload?.url || row.strategicReportDocumentUrl || existing.strategicReportDocumentUrl || '',
+          strategicReportDocumentName: strategicUpload?.fileName || row.strategicReportDocumentName || existing.strategicReportDocumentName || '',
+          thirdPartyReportNo: row.thirdPartyReportNo || '',
+          thirdPartyReportDate: toDateOrNull(row.thirdPartyReportDate),
+          thirdPartyReportDocumentUrl: thirdPartyUpload?.url || row.thirdPartyReportDocumentUrl || existing.thirdPartyReportDocumentUrl || '',
+          thirdPartyReportDocumentName: thirdPartyUpload?.fileName || row.thirdPartyReportDocumentName || existing.thirdPartyReportDocumentName || ''
+        };
+      });
+    }
+
+    if (Array.isArray(parsedQualityReports)) {
+      container.actual.qualityReports = parsedQualityReports.map((row, index) => {
+        const reportUpload = uploadedByField[`qualityReports_${index}_report`];
+        const existing = container.actual?.qualityReports?.[index] || {};
+        return {
+          phase: row.phase || 'S1',
+          reportDate: toDateOrNull(row.reportDate),
+          remarks: row.remarks || '',
+          documentUrl: reportUpload?.url || row.documentUrl || existing.documentUrl || '',
+          documentName: reportUpload?.fileName || row.documentName || existing.documentName || ''
+        };
+      });
+    }
+
+    container.status = 'GRN';
+    await container.save();
+    res.status(200).json({ message: 'Quality details updated successfully', container });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.updatePaymentCostingDetails = async (req, res) => {
+  try {
+    const container = await Container.findById(req.params.id);
+    if (!container) return res.status(404).json({ message: 'Container not found' });
+    if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
+
+    const files = normalizeUploadedFiles(req.files);
+    const { paymentAllocations, paymentCostings } = req.body;
+    const parsedAllocations = parseJsonField(paymentAllocations);
+    const parsedCostings = parseJsonField(paymentCostings);
+
+    const uploadedByField = {};
+    for (const [field, list] of Object.entries(files)) {
+      const file = Array.isArray(list) ? list[0] : null;
+      if (!file) continue;
+      const uploaded = await uploadBufferToS3(file, `shipments/payment-costing/${field}`);
+      uploadedByField[field] = uploaded;
+    }
+
+    if (Array.isArray(parsedAllocations)) {
+      container.actual.paymentAllocations = parsedAllocations.map((row, index) => ({
+        sn: Number(row.sn) || index + 1,
+        description: row.description || '',
+        requestAmount: Number(row.requestAmount) || 0,
+        paidAmount: Number(row.paidAmount) || 0
+      }));
+    }
+
+    if (Array.isArray(parsedCostings)) {
+      container.actual.paymentCostings = parsedCostings.map((row, index) => {
+        const refUpload = uploadedByField[`paymentCostings_${index}_refBill`];
+        const existing = container.actual?.paymentCostings?.[index] || {};
+        return {
+          sn: Number(row.sn) || index + 1,
+          description: row.description || '',
+          requestAmount: Number(row.requestAmount) || 0,
+          paidAmount: Number(row.paidAmount) || 0,
+          actualPaid: Number(row.actualPaid) || 0,
+          refBillNo: row.refBillNo || '',
+          refBillDate: toDateOrNull(row.refBillDate),
+          refBillVendor: row.refBillVendor || '',
+          refBillDocumentUrl: refUpload?.url || row.refBillDocumentUrl || existing.refBillDocumentUrl || '',
+          refBillDocumentName: refUpload?.fileName || row.refBillDocumentName || existing.refBillDocumentName || ''
+        };
+      });
+    }
+
+    const overallDoc = files?.paymentCostingDocument?.[0];
+    if (overallDoc) {
+      const uploaded = await uploadBufferToS3(overallDoc, 'shipments/payment-costing/overall');
+      container.actual.paymentCostingDocumentUrl = uploaded.url;
+      container.actual.paymentCostingDocumentName = uploaded.fileName;
+    }
+
+    await container.save();
+    res.status(200).json({ message: 'Payment costing updated successfully', container });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: err.message });
@@ -578,7 +1114,7 @@ exports.getAllShipments = async (req, res) => {
 
     const formatted = shipments.map(s => ({
       _id: s._id,
-      year:s.year,
+      year: s.year,
       shipmentNo: s.shipmentNo,
       orderNumber: s.orderNumber,
       orderDate: s.orderDate,
@@ -607,21 +1143,210 @@ exports.getAllShipments = async (req, res) => {
 
 exports.getShipmentSummary = async (req, res) => {
   try {
+    const shipments = await Shipment.find({})
+      .populate('supplierId', 'name country')
+      .populate('itemId', 'description itemCode')
+      .sort({ orderDate: -1, createdAt: -1 })
+      .lean();
 
-    const total = await Shipment.countDocuments();
+    const total = shipments.length;
+    const completed = shipments.filter((s) => s.currentStage === 'GRN Completed').length;
+    const inProgress = Math.max(total - completed, 0);
+    const underClearance = shipments.filter((s) =>
+      ['Under Clearance', 'Cleared', 'Released'].includes(s.currentStage)
+    ).length;
 
-    const completed = await Shipment.countDocuments({
-      currentStage: "GRN Completed"
+    const stageMap = new Map();
+    shipments.forEach((s) => {
+      const stage = s.currentStage || 'Shipment Entry';
+      stageMap.set(stage, (stageMap.get(stage) || 0) + 1);
     });
 
-    const inProgress = await Shipment.countDocuments({
-      currentStage: { $ne: "GRN Completed" }
+    const stageBreakdown = Array.from(stageMap.entries()).map(([stage, count]) => ({ stage, count }));
+
+    const monthMap = new Map();
+    shipments.forEach((s) => {
+      const date = s.orderDate ? new Date(s.orderDate) : new Date(s.createdAt);
+      if (!date || Number.isNaN(date.getTime())) return;
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      const key = `${year}-${month}`;
+      monthMap.set(key, (monthMap.get(key) || 0) + 1);
     });
+
+    const monthlyTrend = Array.from(monthMap.entries())
+      .map(([key, count]) => {
+        const [yearStr, monthStr] = key.split('-');
+        const year = Number(yearStr);
+        const month = Number(monthStr);
+        const label = new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'short' });
+        return { label, month, year, count };
+      })
+      .sort((a, b) => (a.year - b.year) || (a.month - b.month))
+      .slice(-6);
+
+    const paymentSummary = shipments.reduce((acc, s) => {
+      const totalAmount = Number(s?.payment?.totalAmount || 0);
+      const paidAmount = Number(s?.payment?.paidAmount || 0);
+      const balanceAmount = Number(s?.payment?.balanceAmount || Math.max(totalAmount - paidAmount, 0));
+      const status = String(s?.payment?.paymentStatus || '').toLowerCase();
+
+      acc.totalAmount += totalAmount;
+      acc.paidAmount += paidAmount;
+      acc.balanceAmount += balanceAmount;
+
+      if (status === 'paid') acc.paidShipments += 1;
+      else if (status === 'partially paid') acc.partiallyPaidShipments += 1;
+      else acc.pendingShipments += 1;
+      return acc;
+    }, {
+      totalAmount: 0,
+      paidAmount: 0,
+      balanceAmount: 0,
+      pendingShipments: 0,
+      partiallyPaidShipments: 0,
+      paidShipments: 0
+    });
+
+    const today = new Date();
+    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const endOfWeek = new Date(startOfToday);
+    endOfWeek.setDate(endOfWeek.getDate() + 7);
+
+    const totalContainers = shipments.reduce((sum, s) =>
+      sum + Number(s.noOfShipments || s.assumedContainerCount || 1), 0
+    );
+
+    const arrivedContainers = shipments
+      .filter((s) => ['Arrived', 'Cleared', 'Released', 'GRN Completed'].includes(s.currentStage))
+      .reduce((sum, s) => sum + Number(s.noOfShipments || s.assumedContainerCount || 1), 0);
+
+    const clearedContainers = shipments
+      .filter((s) => ['Cleared', 'Released', 'GRN Completed'].includes(s.currentStage))
+      .reduce((sum, s) => sum + Number(s.noOfShipments || s.assumedContainerCount || 1), 0);
+
+    const dueThisWeekShipments = shipments.filter((s) => {
+      if (!s.plannedETA) return false;
+      const eta = new Date(s.plannedETA);
+      return eta >= startOfToday && eta <= endOfWeek;
+    }).length;
+
+    const overdueShipments = shipments.filter((s) => {
+      if (!s.plannedETA) return false;
+      const eta = new Date(s.plannedETA);
+      return eta < startOfToday && !['Cleared', 'Released', 'GRN Completed'].includes(s.currentStage);
+    }).length;
+
+    const etaScheduledShipments = shipments.filter((s) => !!s.plannedETA).length;
+
+    const recentShipments = shipments.slice(0, 8).map((s) => ({
+      _id: s._id,
+      shipmentNo: s.shipmentNo,
+      orderDate: s.orderDate || s.createdAt,
+      plannedETA: s.plannedETA || null,
+      status: s.currentStage || 'Shipment Entry',
+      totalAmount: Number(s?.payment?.totalAmount || 0),
+      supplier: s?.supplierId?.name || '',
+      item: s?.itemId?.description || ''
+    }));
+
+    const regionFromCountry = (country) => {
+      const c = String(country || '').toLowerCase();
+      if (c.includes('uae') || c.includes('saudi') || c.includes('oman') || c.includes('qatar')) return 'NA';
+      if (c.includes('india') || c.includes('pakistan') || c.includes('china') || c.includes('japan')) return 'Asia';
+      if (c.includes('germany') || c.includes('france') || c.includes('italy') || c.includes('uk')) return 'EUR';
+      return 'SA';
+    };
+
+    const perfRegions = ['NA', 'EUR', 'Asia', 'SA'];
+    const perfMap = new Map(perfRegions.map((r) => [r, []]));
+    shipments.forEach((s) => {
+      const region = regionFromCountry(s?.supplierId?.country);
+      perfMap.get(region).push(s);
+    });
+
+    const financialPerformance = perfRegions.map((label) => {
+      const rows = perfMap.get(label) || [];
+      const qtyAvg = rows.length
+        ? rows.reduce((sum, r) => sum + Number(r.plannedQtyMT || 0), 0) / rows.length
+        : 0;
+      return {
+        label,
+        cashToCash: Math.round(Math.max(qtyAvg * 0.2, -10)),
+        accountRec: Math.round(Math.max(qtyAvg * 0.15, 5)),
+        inventoryDays: Math.round(Math.max(qtyAvg * 0.25, 8)),
+        payableDays: Math.round(Math.max(qtyAvg * 0.3, 12))
+      };
+    });
+
+    const inventoryMap = new Map();
+    shipments.forEach((s) => {
+      const key = String(s.itemId?._id || s.itemId?.itemCode || s._id);
+      const existing = inventoryMap.get(key) || {
+        category: 'Shipment',
+        product: s?.itemId?.description || s.shipmentNo,
+        sku: s?.itemId?.itemCode || String(s._id).slice(-6).toUpperCase(),
+        inStock: 0
+      };
+      existing.inStock += Math.max(Math.round(Number(s.plannedQtyMT || 0)), 0);
+      inventoryMap.set(key, existing);
+    });
+
+    const inventory = Array.from(inventoryMap.values()).slice(0, 6);
+
+    const orders = recentShipments.map((s) => ({
+      _id: s._id,
+      customer: s.supplier || '-',
+      orderStatus: s.status,
+      orderDate: s.orderDate
+    }));
+
+    const monthlyKpis = monthlyTrend.slice(-5).map((entry, index, rows) => {
+      const prev = rows[index - 1]?.count ?? entry.count ?? 1;
+      const change = prev ? ((entry.count - prev) / prev) * 100 : 0;
+      return {
+        metric: `${entry.label} ${entry.year}`,
+        thisMonth: entry.count,
+        pastMonth: prev,
+        change: Number(change.toFixed(1))
+      };
+    });
+
+    const volumeToday = [
+      { label: 'Orders to Ship', value: inProgress },
+      { label: 'Overdue Shipments', value: overdueShipments },
+      { label: 'Open POs', value: total },
+      { label: 'Late Vendor Shipments', value: Math.max(totalContainers - arrivedContainers, 0) }
+    ];
 
     res.status(200).json({
-      totalShipments: total,
-      completedShipments: completed,
-      inProgressShipments: inProgress
+      kpis: {
+        totalShipments: total,
+        completedShipments: completed,
+        inProgressShipments: inProgress,
+        underClearanceShipments: underClearance,
+        totalPaymentExposure: paymentSummary.balanceAmount
+      },
+      stageBreakdown,
+      monthlyTrend,
+      arrivalSummary: {
+        totalContainers,
+        arrivedContainers,
+        pendingArrivalContainers: Math.max(totalContainers - arrivedContainers, 0),
+        clearedContainers,
+        dueThisWeekShipments,
+        overdueShipments,
+        etaScheduledShipments
+      },
+      paymentSummary,
+      recentShipments,
+      shippingStatus: {
+        orders,
+        volumeToday,
+        inventory,
+        financialPerformance,
+        monthlyKpis
+      }
     });
 
   } catch (err) {
@@ -634,7 +1359,7 @@ exports.getShipmentSummary = async (req, res) => {
 
 exports.getShipmentById = async (req, res) => {
   try {
-    
+
     // Fetch shipment info
     const shipment = await Shipment.findById(req.params.id)
       .populate("supplierId", "name")
@@ -667,57 +1392,213 @@ exports.getShipmentById = async (req, res) => {
         const actualArr = Array.isArray(c.actual) ? c.actual : [c.actual];
         actualArr.forEach(a => {
 
-        const actualData = {
-          containerId: c._id,
-          size: a.size,
-          FCL: a.FCL,
-          qtyMT: a.qtyMT,
-          bags: a.bags,
-          buyingUnit: a.buyingUnit,
-          receivedOn: a.receivedOn,
-          updatedETD: a.updatedETD,
-          updatedETA: a.updatedETA,
-          CLNo: a.CLNo,
-          BLNo: a.BLNo,
-          DHL: a.DHL,
-          docArrivalNotes: a.docArrivalNotes,
-          expectedDocDate: a.expectedDocDate,
-          receiver: a.receiver,
-          bankAdvanceAmountDocumentUrl: a.bankAdvanceAmountDocumentUrl,
-          bankAdvanceApprovedDocumentUrl: a.bankAdvanceApprovedDocumentUrl,
-          bankAdvanceSubmittedOn: a.bankAdvanceSubmittedOn,
-          docToBeReleasedOn: a.docToBeReleasedOn,
-          clearExpectedOn: a.clearExpectedOn,
-          shipmentArrivedOn: a.shipmentArrivedOn,
-          deliveryOrderDocumentUrl: a.deliveryOrderDocumentUrl,
-          deliveryOrderDate: a.deliveryOrderDate,
-          tokenDocumentUrl: a.tokenDocumentUrl,
-          tokenDate: a.tokenDate,
-          transportArrangedDocumentUrl: a.transportArrangedDocumentUrl,
-          transportArrangedDate: a.transportArrangedDate,
-          customsClearanceDocumentUrl: a.customsClearanceDocumentUrl,
-          customsClearanceDate: a.customsClearanceDate,
-          municipalityClearanceDocumentUrl: a.municipalityClearanceDocumentUrl,
-          municipalityClearanceDate: a.municipalityClearanceDate,
-          deliverySchedules: a.deliverySchedules || [],
-          warehouseSchedules: a.warehouseSchedules || [],
-          paid_amount: a.paid_amount,
-          paidOn: a.paidOn,
-          remarks: a.remarks
-        };
+          const actualData = {
+            containerId: c._id,
+            actualSerialNo: a.actualSerialNo,
+            commercialInvoiceNo: a.commercialInvoiceNo,
+            shipOnBoardDate: a.shipOnBoardDate,
+            size: a.size,
+            FCL: a.FCL,
+            qtyMT: a.qtyMT,
+            bags: a.bags,
+            pallet: a.pallet,
+            buyingUnit: a.buyingUnit,
+            receivedOn: a.receivedOn,
+            updatedETD: a.updatedETD,
+            updatedETA: a.updatedETA,
+            CLNo: a.CLNo,
+            BLNo: a.BLNo,
+            portOfLoading: a.portOfLoading,
+            portOfDischarge: a.portOfDischarge,
+            noOfContainers: a.noOfContainers,
+            noOfBags: a.noOfBags,
+            quantityByMt: a.quantityByMt,
+            shippingLine: a.shippingLine,
+            freeDetentionDays: a.freeDetentionDays,
+            maximumDetentionDays: a.maximumDetentionDays,
+            freightPrepared: a.freightPrepared,
+            billExtractionData: a.billExtractionData || null,
+            extractedContainers: a.extractedContainers || [],
+            costSheetBookingDocumentUrl: a.costSheetBookingDocumentUrl,
+            costSheetBookingDocumentName: a.costSheetBookingDocumentName,
+            costSheetBookings: a.costSheetBookings || [],
+            storageAllocations: a.storageAllocations || [],
+            DHL: a.DHL,
+            courierTrackNo: a.courierTrackNo,
+            courierServiceProvider: a.courierServiceProvider,
+            docArrivalNotes: a.docArrivalNotes,
+            expectedDocDate: a.expectedDocDate,
+            receiver: a.receiver,
+            bankName: a.bankName,
+            inwardCollectionAdviceDate: a.inwardCollectionAdviceDate,
+            inwardCollectionAdviceDocumentUrl: a.inwardCollectionAdviceDocumentUrl,
+            inwardCollectionAdviceDocumentName: a.inwardCollectionAdviceDocumentName,
+            murabahaContractReleasedDate: a.murabahaContractReleasedDate,
+            murabahaContractApprovedDate: a.murabahaContractApprovedDate,
+            murabahaContractSubmittedDate: a.murabahaContractSubmittedDate,
+            murabahaContractSubmittedDocumentUrl: a.murabahaContractSubmittedDocumentUrl,
+            murabahaContractSubmittedDocumentName: a.murabahaContractSubmittedDocumentName,
+            documentsReleasedDate: a.documentsReleasedDate,
+            documentsReleasedDocumentUrl: a.documentsReleasedDocumentUrl,
+            documentsReleasedDocumentName: a.documentsReleasedDocumentName,
+            bankAdvanceAmountDocumentUrl: a.bankAdvanceAmountDocumentUrl,
+            bankAdvanceApprovedDocumentUrl: a.bankAdvanceApprovedDocumentUrl,
+            bankAdvanceSubmittedOn: a.bankAdvanceSubmittedOn,
+            docToBeReleasedOn: a.docToBeReleasedOn,
+            arrivalOn: a.arrivalOn,
+            shipmentFreeRetentionDate: a.shipmentFreeRetentionDate,
+            portRetentionWithPenaltyDate: a.portRetentionWithPenaltyDate,
+            arrivalNoticeDate: a.arrivalNoticeDate,
+            arrivalNoticeDocumentUrl: a.arrivalNoticeDocumentUrl,
+            arrivalNoticeDocumentName: a.arrivalNoticeDocumentName,
+            advanceRequestDate: a.advanceRequestDate,
+            advanceRequestDocumentUrl: a.advanceRequestDocumentUrl,
+            advanceRequestDocumentName: a.advanceRequestDocumentName,
+            doReleasedDate: a.doReleasedDate,
+            doReleasedDocumentUrl: a.doReleasedDocumentUrl,
+            doReleasedDocumentName: a.doReleasedDocumentName,
+            doReleasedRemarks: a.doReleasedRemarks,
+            dpApprovalDate: a.dpApprovalDate,
+            dpApprovalDocumentUrl: a.dpApprovalDocumentUrl,
+            dpApprovalDocumentName: a.dpApprovalDocumentName,
+            dpApprovalRemarks: a.dpApprovalRemarks,
+            tokenReceivedDate: a.tokenReceivedDate,
+            municipalityDate: a.municipalityDate,
+            municipalityDocumentUrl: a.municipalityDocumentUrl,
+            municipalityDocumentName: a.municipalityDocumentName,
+            municipalityRemarks: a.municipalityRemarks,
+            customsClearanceRemarks: a.customsClearanceRemarks,
+            clearExpectedOn: a.clearExpectedOn,
+            shipmentArrivedOn: a.shipmentArrivedOn,
+            deliveryOrderDocumentUrl: a.deliveryOrderDocumentUrl,
+            deliveryOrderDate: a.deliveryOrderDate,
+            tokenDocumentUrl: a.tokenDocumentUrl,
+            tokenDate: a.tokenDate,
+            transportArrangedDocumentUrl: a.transportArrangedDocumentUrl,
+            transportArrangedDate: a.transportArrangedDate,
+            customsClearanceDocumentUrl: a.customsClearanceDocumentUrl,
+            customsClearanceDate: a.customsClearanceDate,
+            municipalityClearanceDocumentUrl: a.municipalityClearanceDocumentUrl,
+            municipalityClearanceDate: a.municipalityClearanceDate,
+            deliverySchedules: a.deliverySchedules || [],
+            warehouseSchedules: a.warehouseSchedules || [],
+            transportationBooked: a.transportationBooked || [],
+            storageSplits: a.storageSplits || [],
+            qualityRows: a.qualityRows || [],
+            qualityReports: a.qualityReports || [],
+            paymentAllocations: a.paymentAllocations || [],
+            paymentCostings: a.paymentCostings || [],
+            paymentCostingDocumentUrl: a.paymentCostingDocumentUrl,
+            paymentCostingDocumentName: a.paymentCostingDocumentName,
+            paid_amount: a.paid_amount,
+            paidOn: a.paidOn,
+            remarks: a.remarks
+          };
 
-        if (hasValues(a.clearance)) {
-          actualData.clearance = a.clearance;
-        }
+          if (hasValues(a.clearance)) {
+            actualData.clearance = a.clearance;
+          }
 
-        if (hasValues(a.grn)) {
-          actualData.grn = a.grn;
-        }
+          if (hasValues(a.grn)) {
+            actualData.grn = a.grn;
+          }
 
-        actual.push(actualData);
-      });
+          actual.push(actualData);
+        });
       }
     });
+
+    for (const row of actual) {
+      const signedStep3Doc = await toSignedDocument(row.costSheetBookingDocumentUrl, row.costSheetBookingDocumentName);
+      row.costSheetBookingDocumentUrl = signedStep3Doc.url;
+      row.costSheetBookingDocumentName = signedStep3Doc.name;
+
+      const signedInwardAdvice = await toSignedDocument(row.inwardCollectionAdviceDocumentUrl, row.inwardCollectionAdviceDocumentName);
+      row.inwardCollectionAdviceDocumentUrl = signedInwardAdvice.url;
+      row.inwardCollectionAdviceDocumentName = signedInwardAdvice.name;
+
+      const signedMurabaha = await toSignedDocument(row.murabahaContractSubmittedDocumentUrl, row.murabahaContractSubmittedDocumentName);
+      row.murabahaContractSubmittedDocumentUrl = signedMurabaha.url;
+      row.murabahaContractSubmittedDocumentName = signedMurabaha.name;
+
+      const signedReleased = await toSignedDocument(row.documentsReleasedDocumentUrl, row.documentsReleasedDocumentName);
+      row.documentsReleasedDocumentUrl = signedReleased.url;
+      row.documentsReleasedDocumentName = signedReleased.name;
+
+      const signedArrivalNotice = await toSignedDocument(row.arrivalNoticeDocumentUrl, row.arrivalNoticeDocumentName);
+      row.arrivalNoticeDocumentUrl = signedArrivalNotice.url;
+      row.arrivalNoticeDocumentName = signedArrivalNotice.name;
+
+      const signedAdvance = await toSignedDocument(row.advanceRequestDocumentUrl, row.advanceRequestDocumentName);
+      row.advanceRequestDocumentUrl = signedAdvance.url;
+      row.advanceRequestDocumentName = signedAdvance.name;
+
+      const signedDoReleased = await toSignedDocument(row.doReleasedDocumentUrl, row.doReleasedDocumentName);
+      row.doReleasedDocumentUrl = signedDoReleased.url;
+      row.doReleasedDocumentName = signedDoReleased.name;
+
+      const signedDpApproval = await toSignedDocument(row.dpApprovalDocumentUrl, row.dpApprovalDocumentName);
+      row.dpApprovalDocumentUrl = signedDpApproval.url;
+      row.dpApprovalDocumentName = signedDpApproval.name;
+
+      const signedCustoms = await toSignedDocument(row.customsClearanceDocumentUrl, row.customsClearanceDocumentName);
+      row.customsClearanceDocumentUrl = signedCustoms.url;
+      row.customsClearanceDocumentName = signedCustoms.name;
+
+      const signedMunicipality = await toSignedDocument(row.municipalityDocumentUrl, row.municipalityDocumentName);
+      row.municipalityDocumentUrl = signedMunicipality.url;
+      row.municipalityDocumentName = signedMunicipality.name;
+
+      const signedPaymentCosting = await toSignedDocument(row.paymentCostingDocumentUrl, row.paymentCostingDocumentName);
+      row.paymentCostingDocumentUrl = signedPaymentCosting.url;
+      row.paymentCostingDocumentName = signedPaymentCosting.name;
+
+      row.qualityRows = await Promise.all((row.qualityRows || []).map(async (qualityRow) => {
+        const plainQualityRow = toPlainObject(qualityRow);
+        const inhouse = await toSignedDocument(qualityRow.inhouseReportDocumentUrl, qualityRow.inhouseReportDocumentName);
+        const strategic = await toSignedDocument(qualityRow.strategicReportDocumentUrl, qualityRow.strategicReportDocumentName);
+        const thirdParty = await toSignedDocument(qualityRow.thirdPartyReportDocumentUrl, qualityRow.thirdPartyReportDocumentName);
+        return {
+          ...plainQualityRow,
+          inhouseReportDocumentUrl: inhouse.url,
+          inhouseReportDocumentName: inhouse.name,
+          strategicReportDocumentUrl: strategic.url,
+          strategicReportDocumentName: strategic.name,
+          thirdPartyReportDocumentUrl: thirdParty.url,
+          thirdPartyReportDocumentName: thirdParty.name,
+        };
+      }));
+
+      row.qualityReports = await Promise.all((row.qualityReports || []).map(async (reportRow) => {
+        const plainReportRow = toPlainObject(reportRow);
+        const signed = await toSignedDocument(reportRow.documentUrl, reportRow.documentName);
+        return {
+          ...plainReportRow,
+          documentUrl: signed.url,
+          documentName: signed.name,
+        };
+      }));
+
+      row.paymentCostings = await Promise.all((row.paymentCostings || []).map(async (costingRow) => {
+        const plainCostingRow = toPlainObject(costingRow);
+        const signed = await toSignedDocument(costingRow.refBillDocumentUrl, costingRow.refBillDocumentName);
+        return {
+          ...plainCostingRow,
+          refBillDocumentUrl: signed.url,
+          refBillDocumentName: signed.name,
+        };
+      }));
+    }
+
+    const signedLpoUrl = shipment.lpoDocumentUrl
+      ? await createSignedGetUrl(shipment.lpoDocumentUrl, 900).catch(() => shipment.lpoDocumentUrl)
+      : null;
+    const signedProformaUrl = shipment.proformaDocumentUrl
+      ? await createSignedGetUrl(shipment.proformaDocumentUrl, 900).catch(() => shipment.proformaDocumentUrl)
+      : null;
+    const signedS1QualityUrl = shipment.s1QualityReportUrl
+      ? await createSignedGetUrl(shipment.s1QualityReportUrl, 900).catch(() => shipment.s1QualityReportUrl)
+      : null;
 
     res.status(200).json({
       shipment: {
@@ -727,12 +1608,18 @@ exports.getShipmentById = async (req, res) => {
         poNumber: shipment.poNumber,
         fpoNo: shipment.fpoNo,
         orderDate: shipment.orderDate,
-        supplier: shipment.supplierId?.name || null,
+        supplier: shipment.supplierName || shipment.supplierId?.name || null,
+        itemCode: shipment.itemCode || shipment.itemId?.itemCode || null,
+        commodity: shipment.commodity || null,
+        countryOfOrigin: shipment.countryOfOrigin || null,
+        itemDescription: shipment.itemDescription || shipment.itemId?.description || null,
         item: shipment.itemId
           ? `${shipment.itemId.itemCode} - ${shipment.itemId.description}`
-          : null,
-        riceName: shipment.itemId?.riceName,
-        packing: shipment.itemId?.packing,
+          : (shipment.itemCode || shipment.itemDescription
+            ? `${shipment.itemCode || ''}${shipment.itemCode && shipment.itemDescription ? ' - ' : ''}${shipment.itemDescription || ''}`.trim()
+            : null),
+        riceName: shipment.brandName || shipment.itemId?.riceName,
+        packing: shipment.packing || shipment.itemId?.packing,
         piNo: shipment.piNo,
         totalOrderedQtyMT: shipment.totalOrderedQtyMT,
         plannedQtyMT: shipment.plannedQtyMT,
@@ -740,14 +1627,25 @@ exports.getShipmentById = async (req, res) => {
         assumedContainerCount: shipment.assumedContainerCount ?? shipment.totalSplitQtyMT,
         currentStage: shipment.currentStage,
         payment: shipment.payment.totalAmount,
-        incoterms:shipment.incoterms,
-        buyunit:shipment.buyunit,
-        fcPerUnit:shipment.fcPerUnit,
-        advanceAmount:shipment.advanceAmount,
-        paymentTerms:shipment.paymentTerms,
-        plannedETD:shipment.plannedETD,
-        plannedETA:shipment.plannedETA,
-        containerSize:shipment.containersize,
+        incoterms: shipment.incoterms,
+        buyunit: shipment.buyunit,
+        fcPerUnit: shipment.fcPerUnit,
+        advanceAmount: shipment.advanceAmount,
+        paymentTerms: shipment.paymentTerms,
+        bankName: shipment.bankName,
+        barcode: shipment.barcode,
+        variant: shipment.variant,
+        hsCode: shipment.hsCode,
+        lpoDocumentName: shipment.lpoDocumentName || null,
+        lpoDocumentUrl: signedLpoUrl,
+        proformaDocumentName: shipment.proformaDocumentName || null,
+        proformaDocumentUrl: signedProformaUrl,
+        s1QualityReportName: shipment.s1QualityReportName || null,
+        s1QualityReportUrl: signedS1QualityUrl,
+        q1Report: shipment.q1Report || null,
+        plannedETD: shipment.plannedETD,
+        plannedETA: shipment.plannedETA,
+        containerSize: shipment.containersize,
         noOfShipments: shipment.noOfShipments
       },
       planned,
@@ -869,21 +1767,28 @@ function mapPythonResponseToExtraction(pythonRes) {
     };
   }
 
+  // S1 quality report payload from Python extraction response
+  // Kept as nested object so frontend can use full extracted structure as needed.
+  if (pythonRes.s1_quality_report && typeof pythonRes.s1_quality_report === 'object') {
+    out.q1Report = pythonRes.s1_quality_report;
+  }
+
   return out;
 }
 
 // =======================
 // EXTRACT FROM DOCUMENTS — calls Python API, maps response to frontend shape
-// Frontend sends: document1 = Purchase order (LPO), document2 = Performa Invoice (PI)
-// Python API expects: lpo_invoice, performa_invoice (with optional inco_terms_list, suppliers)
+// Frontend sends: document1 = Purchase order (LPO), document2 = Performa Invoice (PI), s1QualityReport
+// Python API expects: lpo_invoice, performa_invoice, rice_quality_report (with optional inco_terms_list, suppliers)
 // =======================
 exports.extractFromDocuments = async (req, res) => {
   try {
     const files = req.files;
-    // document1 = Purchase order → lpo_invoice, document2 = Performa Invoice → performa_invoice
-    if (!files?.document1?.[0] || !files?.document2?.[0]) {
+    // document1 = Purchase order → lpo_invoice, document2 = Performa Invoice → performa_invoice,
+    // s1QualityReport = quality report → rice_quality_report
+    if (!files?.document1?.[0] || !files?.document2?.[0] || !files?.s1QualityReport?.[0]) {
       return res.status(400).json({
-        message: 'Both Purchase order (document1) and Performa Invoice (document2) are required'
+        message: 'Purchase order (document1), Pro-forma Invoice (document2), and S1 Quality Report (s1QualityReport) are required'
       });
     }
 
@@ -894,13 +1799,16 @@ exports.extractFromDocuments = async (req, res) => {
 
     const lpoFile = files.document1[0];
     const piFile = files.document2[0];
+    const qualityFile = files.s1QualityReport[0];
 
     const FormData = globalThis.FormData;
     const form = new FormData();
     const lpoBlob = new Blob([lpoFile.buffer], { type: lpoFile.mimetype || 'application/octet-stream' });
     const piBlob = new Blob([piFile.buffer], { type: piFile.mimetype || 'application/octet-stream' });
+    const qualityBlob = new Blob([qualityFile.buffer], { type: qualityFile.mimetype || 'application/octet-stream' });
     form.append('lpo_invoice', lpoBlob, lpoFile.originalname || 'lpo.pdf');
     form.append('performa_invoice', piBlob, piFile.originalname || 'pi.pdf');
+    form.append('rice_quality_report', qualityBlob, qualityFile.originalname || 'quality-report.pdf');
     form.append('inco_terms_list', incoTermsList);
     form.append('suppliers', suppliersList);
 
@@ -939,7 +1847,7 @@ exports.extractFromDocuments = async (req, res) => {
 };
 
 // =======================
-// EXTRACT BILL NO — calls Python purchase-tracker/bill-no (single file: PDF or image)
+// EXTRACT BILL NO — calls Python bill-no endpoint (single file: PDF or image)
 // =======================
 exports.extractBillNo = async (req, res) => {
   try {
@@ -947,56 +1855,67 @@ exports.extractBillNo = async (req, res) => {
       return res.status(400).json({ message: 'File is required' });
     }
 
-    const pythonUrl = process.env.PYTHON_EXTRACTION_API_URL || 'http://localhost:8096';
-    const endpoint = `${pythonUrl.replace(/\/$/, '')}/purchase-tracker/bill-no`;
+    const baseUrl = (
+      process.env.PYTHON_EXTRACTION_API_URL
+    ).replace(/\/$/, '');
+    const configuredPath = process.env.PYTHON_BILLNO_PATH;
+    const candidatePaths = configuredPath
+      ? [configuredPath]
+      : ['/purchase-tracker/fetch-details'];
 
     const FormData = globalThis.FormData;
-    const form = new FormData();
-    const blob = new Blob([req.file.buffer], { type: req.file.mimetype || 'application/octet-stream' });
-    form.append('file', blob, req.file.originalname || 'document');
+    let response = null;
+    let lastErrorPayload = null;
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      body: form
-    });
+    for (const path of candidatePaths) {
+      const endpoint = `${baseUrl}/${String(path).replace(/^\/+/, '')}`;
+      console.log("endpoint", endpoint);
+      const form = new FormData();
+      const blob = new Blob([req.file.buffer], { type: req.file.mimetype || 'application/octet-stream' });
+      form.append('file', blob, req.file.originalname || 'document');
 
-    if (!response.ok) {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        body: form
+      });
+
+      if (response.ok) break;
+
       const errText = await response.text();
       let errJson;
       try { errJson = JSON.parse(errText); } catch { errJson = { detail: errText }; }
+      lastErrorPayload = { endpoint, status: response.status, error: errJson };
+
+      // Common endpoint mismatch; try next candidate route.
+      if ([404, 405].includes(response.status)) continue;
       return res.status(response.status).json({
         message: errJson.detail || errJson.message || `Bill-no extraction service returned ${response.status}`,
-        error: errJson
+        error: { ...errJson, endpoint }
+      });
+    }
+
+    if (!response || !response.ok) {
+      return res.status(lastErrorPayload?.status || 502).json({
+        message: 'Bill-no extraction endpoint mismatch. Check Python bill-no route configuration.',
+        error: lastErrorPayload || {}
       });
     }
 
     const pythonRes = await response.json();
     return res.status(200).json({
-      bill_no: pythonRes.bill_no ?? '',
-      metadata: pythonRes.metadata
+      bill_no: pythonRes.bill_no || pythonRes.billNo || pythonRes.data?.bill_no || '',
+      invoice_number: pythonRes.invoice_number || pythonRes.invoiceNumber || pythonRes.data?.invoice_number || '',
+      metadata: pythonRes.metadata,
+      ...pythonRes
     });
   } catch (err) {
     console.error('Extract bill no error:', err);
     const isNetwork = err.cause?.code === 'ECONNREFUSED' || err.code === 'ECONNREFUSED';
     return res.status(500).json({
       message: isNetwork
-        ? 'Bill-no extraction service unavailable. Check PYTHON_EXTRACTION_API_URL and that the Python service is running.'
+        ? 'Bill-no extraction service unavailable. Check PYTHON_BILLNO_API_URL/PYTHON_EXTRACTION_API_URL and that the Python service is running.'
         : (err.message || 'Server error'),
       error: err.message
     });
   }
 };
-
-
-
-
-
-
-
-
-
-
-
-
-
-

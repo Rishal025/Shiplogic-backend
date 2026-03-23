@@ -21,6 +21,18 @@ router.post(
   '/create',
   authMiddleware,
   authorize(['Purchase','Admin']),
+  (req, res, next) => {
+    upload.fields([
+      { name: 'lpoDocument', maxCount: 1 },
+      { name: 'proformaDocument', maxCount: 1 },
+      { name: 's1QualityReport', maxCount: 1 }
+    ])(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      }
+      next();
+    });
+  },
   controller.createShipment
 );
 
@@ -30,7 +42,11 @@ router.post(
   authMiddleware,
   authorize(['Purchase','Admin']),
   (req, res, next) => {
-    upload.fields([{ name: 'document1', maxCount: 1 }, { name: 'document2', maxCount: 1 }])(req, res, (err) => {
+    upload.fields([
+      { name: 'document1', maxCount: 1 },
+      { name: 'document2', maxCount: 1 },
+      { name: 's1QualityReport', maxCount: 1 }
+    ])(req, res, (err) => {
       if (err) {
         return res.status(400).json({ message: err.message || 'Invalid file upload' });
       }
@@ -71,9 +87,32 @@ router.patch(
 );
 
 router.patch(
+  '/container/bl-details/:id',
+  authMiddleware,
+  authorize(['Purchase','Admin']),
+  (req, res, next) => {
+    upload.fields([{ name: 'costSheetBookingDocument', maxCount: 1 }])(req, res, (err) => {
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      next();
+    });
+  },
+  controller.updateBLDetails
+);
+
+router.patch(
   "/container/payment/:id",
   authMiddleware,
   authorize(['FAS','Admin']),
+  (req, res, next) => {
+    upload.fields([
+      { name: 'inwardCollectionAdviceDocument', maxCount: 1 },
+      { name: 'murabahaContractSubmittedDocument', maxCount: 1 },
+      { name: 'documentsReleasedDocument', maxCount: 1 }
+    ])(req, res, (err) => {
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      next();
+    });
+  },
   controller.updateFASContainer
 );
 
@@ -82,6 +121,19 @@ router.patch(
 "/container/logistic/:id", 
 authMiddleware,
 authorize(['Logistic','Admin']),
+(req, res, next) => {
+  upload.fields([
+    { name: 'arrivalNoticeDocument', maxCount: 1 },
+    { name: 'advanceRequestDocument', maxCount: 1 },
+    { name: 'doReleasedDocument', maxCount: 1 },
+    { name: 'dpApprovalDocument', maxCount: 1 },
+    { name: 'customsClearanceDocument', maxCount: 1 },
+    { name: 'municipalityDocument', maxCount: 1 }
+  ])(req, res, (err) => {
+    if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
+    next();
+  });
+},
 controller.updateLogisticsDetails
 );
 
@@ -97,6 +149,39 @@ router.patch(
 authMiddleware,
 authorize(['Logistic','Admin']),
 controller.clearContainer
+);
+
+router.patch(
+  '/container/storage/:id',
+  authMiddleware,
+  authorize(['Logistic','Admin']),
+  controller.updateStorageDetails
+);
+
+router.patch(
+  '/container/quality/:id',
+  authMiddleware,
+  authorize(['Purchase','Admin']),
+  (req, res, next) => {
+    upload.any()(req, res, (err) => {
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      next();
+    });
+  },
+  controller.updateQualityDetails
+);
+
+router.patch(
+  '/container/payment-costing/:id',
+  authMiddleware,
+  authorize(['FAS','Admin']),
+  (req, res, next) => {
+    upload.any()(req, res, (err) => {
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      next();
+    });
+  },
+  controller.updatePaymentCostingDetails
 );
 
 router.patch(
@@ -132,5 +217,3 @@ router.get(
 
 
 module.exports = router;
-
-

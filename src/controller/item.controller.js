@@ -1,4 +1,5 @@
 const Item = require('../models/item.model');
+const mongoose = require('mongoose');
 const logAudit = require('../core/utils/auditLogger');
 
 // =======================
@@ -81,5 +82,33 @@ exports.getItemById = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+// =======================
+// GET ITEM LIST ENTRY BY ITEM CODE
+// =======================
+exports.getItemListByCode = async (req, res) => {
+  try {
+    const rawCode = String(req.params.itemCode || '').trim();
+    if (!rawCode) {
+      return res.status(400).json({ message: 'itemCode is required' });
+    }
+
+    const collection = mongoose.connection.collection('item_list');
+    const escapedCode = rawCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const item = await collection.findOne({
+      item_code: { $regex: `^${escapedCode}$`, $options: 'i' }
+    });
+
+    if (!item) {
+      return res.status(404).json({ message: 'Item not found' });
+    }
+
+    res.json(item);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
   }
 };

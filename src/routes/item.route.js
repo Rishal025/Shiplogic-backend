@@ -20,6 +20,13 @@ router.get(
   itemController.getItems
 );
 
+router.get(
+  '/by-code/:itemCode',
+  authMiddleware,
+  authorize(['Purchase','FAS','Logistics','Manager','Admin']),
+  itemController.getItemListByCode
+);
+
 // GET ITEM BY ID - must be after /all
 router.get(
   '/:id',

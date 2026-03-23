@@ -5,8 +5,22 @@ const shipmentSchema = new mongoose.Schema({
 
   poNumber: { type: String, required: true },
   year: { type: Number, required: true },
-  supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: true },
+  supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: false },
   itemId: { type: mongoose.Schema.Types.ObjectId, ref: "Item" },
+  supplierName: { type: String },
+  itemCode: { type: String },
+  itemDescription: { type: String },
+  commodity: { type: String },
+  countryOfOrigin: { type: String },
+  brandName: { type: String },
+  barcode: { type: String },
+  variant: { type: String },
+  hsCode: { type: String },
+  packing: { type: String },
+  portOfLoading: { type: String },
+  portOfDischarge: { type: String },
+  bankName: { type: String },
+  q1Report: { type: mongoose.Schema.Types.Mixed },
 
   shipmentNo: { type: String, unique: true },
   plannedQtyMT: { type: Number, required: true },
@@ -32,6 +46,12 @@ const shipmentSchema = new mongoose.Schema({
   advanceAmount: { type: Number, default: 0 }, 
   incoterms:{type:String},
   buyunit:{type:String},
+  lpoDocumentName: { type: String },
+  lpoDocumentUrl: { type: String },
+  proformaDocumentName: { type: String },
+  proformaDocumentUrl: { type: String },
+  s1QualityReportName: { type: String },
+  s1QualityReportUrl: { type: String },
   containersize:{type:Number, default: 0 },
   payment: {
   totalAmount: { type: Number, default: 0 },
@@ -68,4 +88,3 @@ const shipmentSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 module.exports = mongoose.model("Shipment", shipmentSchema);
-
