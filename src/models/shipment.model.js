@@ -19,6 +19,10 @@ const shipmentSchema = new mongoose.Schema({
   packing: { type: String },
   portOfLoading: { type: String },
   portOfDischarge: { type: String },
+  piDate: { type: Date },
+  fcl: { type: Number, default: 0 },
+  pallet: { type: Number, default: 0 },
+  bags: { type: Number, default: 0 },
   bankName: { type: String },
   q1Report: { type: mongoose.Schema.Types.Mixed },
 

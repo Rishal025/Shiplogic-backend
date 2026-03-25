@@ -51,6 +51,42 @@ const toPlainObject = (value) => {
   return value;
 };
 
+const toTimeString = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value.slice(0, 5);
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return `${String(value.getHours()).padStart(2, '0')}:${String(value.getMinutes()).padStart(2, '0')}`;
+  }
+  return '';
+};
+
+const combineDateTime = (dateValue, timeValue) => {
+  const date = toDateOrNull(dateValue);
+  const time = toTimeString(timeValue);
+  if (!date || !time) return null;
+  const [hours, minutes] = time.split(':').map((part) => Number(part));
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  const combined = new Date(date);
+  combined.setHours(hours, minutes, 0, 0);
+  return combined;
+};
+
+const calculateDelayHours = (transportDateValue, transportTimeValue, receivedDateValue, receivedTimeValue) => {
+  const transportDateTime = combineDateTime(transportDateValue, transportTimeValue);
+  const receivedDateTime = combineDateTime(receivedDateValue, receivedTimeValue);
+  if (!transportDateTime || !receivedDateTime) return 0;
+  const diffHours = (receivedDateTime.getTime() - transportDateTime.getTime()) / (1000 * 60 * 60);
+  return diffHours > 0 ? Number(diffHours.toFixed(2)) : 0;
+};
+
+const addDays = (dateValue, days) => {
+  const date = toDateOrNull(dateValue);
+  if (!date || !Number.isFinite(Number(days))) return null;
+  const result = new Date(date);
+  result.setDate(result.getDate() + Number(days));
+  return result;
+};
+
 exports.createShipment = async (req, res) => {
   try {
     const {
@@ -60,6 +96,7 @@ exports.createShipment = async (req, res) => {
       supplierId,
       supplierName,
       piNo,
+      piDate,
       fpoNo,
       itemId,
       itemCode,
@@ -76,6 +113,9 @@ exports.createShipment = async (req, res) => {
       plannedQtyMT,
       estimatedContainerCount,
       estimatedContainerSize,
+      fcl,
+      pallet,
+      bags,
       plannedETD,
       plannedETA,
       fcPerUnit,
@@ -181,7 +221,11 @@ exports.createShipment = async (req, res) => {
       plannedETD,
       plannedETA,
       piNo,
+      piDate: toDateOrNull(piDate),
       fpoNo,
+      fcl: Number(fcl) || 0,
+      pallet: Number(pallet) || 0,
+      bags: Number(bags) || 0,
       fcPerUnit: rate,
       totalFC,
       paymentTerms,
@@ -251,6 +295,19 @@ exports.createPlannedContainersBulk = async (req, res) => {
     if (!shipment) return res.status(404).json({ message: "Shipment not found" });
 
     const totalQtyMT = shipment.plannedQtyMT ?? shipment.totalOrderedQtyMT ?? 0;
+    const existingPlannedContainers = await Container.find({ shipmentId, status: "Planned" }).sort({ createdAt: 1 });
+    const previousPlannedSnapshot = existingPlannedContainers.map((container) => ({
+      containerId: container._id,
+      size: container.planned?.size,
+      FCL: container.planned?.FCL,
+      qtyMT: container.planned?.qtyMT,
+      bags: container.planned?.bags,
+      etd: container.planned?.etd,
+      eta: container.planned?.eta,
+      weekWiseShipment: container.planned?.weekWiseShipment,
+      buyingUnit: container.planned?.buyingUnit,
+      status: container.status,
+    }));
 
     // 1️⃣ Delete all existing planned containers for this shipment
     await Container.deleteMany({ shipmentId, status: "Planned" });
@@ -272,6 +329,8 @@ exports.createPlannedContainersBulk = async (req, res) => {
         planned: {
           size: c.size,
           FCL: c.FCL,
+          etd: toDateOrNull(c.etd),
+          eta: toDateOrNull(c.eta),
           weekWiseShipment: c.weekWiseShipment,
           qtyMT: qty,
           buyingUnit: c.buyingUnit || "MT"
@@ -289,6 +348,38 @@ exports.createPlannedContainersBulk = async (req, res) => {
     if (noOfShipments != null && noOfShipments !== '') shipment.noOfShipments = Number(noOfShipments);
     shipment.currentStage = "Planned Split";
     await shipment.save();
+
+    const updatedPlannedSnapshot = processedContainers.map((container) => ({
+      containerId: container._id,
+      size: container.planned?.size,
+      FCL: container.planned?.FCL,
+      qtyMT: container.planned?.qtyMT,
+      bags: container.planned?.bags,
+      etd: container.planned?.etd,
+      eta: container.planned?.eta,
+      weekWiseShipment: container.planned?.weekWiseShipment,
+      buyingUnit: container.planned?.buyingUnit,
+      status: container.status,
+    }));
+
+    if (req.user?._id) {
+      await logAudit.create({
+        userId: req.user._id,
+        module: "Purchase",
+        entity: "Shipment",
+        entityId: shipment._id,
+        action: previousPlannedSnapshot.length > 0 ? "ScheduledBaselineUpdated" : "ScheduledBaselineCreated",
+        before: { plannedContainers: previousPlannedSnapshot },
+        after: {
+          plannedContainers: updatedPlannedSnapshot,
+          noOfShipments: shipment.noOfShipments,
+          plannedQtyMT: shipment.plannedQtyMT,
+        },
+        remarks: previousPlannedSnapshot.length > 0
+          ? "Scheduled baseline updated from Step 2"
+          : "Scheduled baseline created from Step 2",
+      });
+    }
 
     res.status(200).json({
       message: "Planned containers replaced successfully",
@@ -489,14 +580,15 @@ exports.updateBLDetails = async (req, res) => {
       container.actual.costSheetBookings = parsedCostSheetBookings.map((row) => ({
         sn: Number(row.sn) || 0,
         description: row.description || '',
-        requestAmount: Number(row.requestAmount) || 0,
-        paidAmount: Number(row.paidAmount) || 0
+        requestAmount: Number(row.requestAmount ?? 0),
+        paidAmount: Number(row.paidAmount ?? 0)
       }));
     }
     if (Array.isArray(parsedStorageAllocations)) {
       container.actual.storageAllocations = parsedStorageAllocations.map((row) => ({
         sn: Number(row.sn) || 0,
         containerSerialNo: row.containerSerialNo || '',
+        bags: Number(row.bags ?? row.pkgCt ?? 0) || 0,
         warehouse: row.warehouse || '',
         storageAvailability: Number(row.storageAvailability) || 0
       }));
@@ -617,7 +709,9 @@ exports.updateLogisticsDetails = async (req, res) => {
       arrivalOn,
       shipmentFreeRetentionDate,
       portRetentionWithPenaltyDate,
+      maximumRetentionDate,
       arrivalNoticeDate,
+      arrivalNoticeFreeRetentionDays,
       advanceRequestDate,
       doReleasedDate,
       doReleasedRemarks,
@@ -653,8 +747,25 @@ exports.updateLogisticsDetails = async (req, res) => {
     const parsedWarehouseSchedules = parseJsonField(warehouseSchedules);
 
     if (arrivalOn !== undefined) container.actual.arrivalOn = toDateOrNull(arrivalOn);
-    if (shipmentFreeRetentionDate !== undefined) container.actual.shipmentFreeRetentionDate = toDateOrNull(shipmentFreeRetentionDate);
-    if (portRetentionWithPenaltyDate !== undefined) container.actual.portRetentionWithPenaltyDate = toDateOrNull(portRetentionWithPenaltyDate);
+    if (arrivalNoticeFreeRetentionDays !== undefined) {
+      container.actual.arrivalNoticeFreeRetentionDays = Number(arrivalNoticeFreeRetentionDays) || 0;
+    }
+    const effectiveArrivalOn = arrivalOn !== undefined ? arrivalOn : container.actual.arrivalOn;
+    const effectiveFreeRetentionDays =
+      Number(container.actual.arrivalNoticeFreeRetentionDays) > 0
+        ? Number(container.actual.arrivalNoticeFreeRetentionDays)
+        : Number(container.actual.freeDetentionDays) || 0;
+    const computedFreeRetentionDate = addDays(effectiveArrivalOn, effectiveFreeRetentionDays);
+    const computedMaximumRetentionDate = addDays(effectiveArrivalOn, container.actual.maximumDetentionDays);
+    if (shipmentFreeRetentionDate !== undefined || computedFreeRetentionDate) {
+      container.actual.shipmentFreeRetentionDate = computedFreeRetentionDate || toDateOrNull(shipmentFreeRetentionDate);
+    }
+    if (portRetentionWithPenaltyDate !== undefined || computedMaximumRetentionDate) {
+      container.actual.portRetentionWithPenaltyDate = computedMaximumRetentionDate || toDateOrNull(portRetentionWithPenaltyDate);
+    }
+    if (maximumRetentionDate !== undefined || computedMaximumRetentionDate) {
+      container.actual.maximumRetentionDate = computedMaximumRetentionDate || toDateOrNull(maximumRetentionDate);
+    }
     if (arrivalNoticeDate !== undefined) container.actual.arrivalNoticeDate = toDateOrNull(arrivalNoticeDate);
     if (advanceRequestDate !== undefined) container.actual.advanceRequestDate = toDateOrNull(advanceRequestDate);
     if (doReleasedDate !== undefined) container.actual.doReleasedDate = toDateOrNull(doReleasedDate);
@@ -722,11 +833,28 @@ exports.updateLogisticsDetails = async (req, res) => {
         containerSerialNo: row.containerSerialNo || '',
         transportCompanyName: row.transportCompanyName || '',
         bookedDate: toDateOrNull(row.bookedDate),
-        bookingTime: row.bookingTime || '',
+        bookingTime: toTimeString(row.bookingTime),
         transportDate: toDateOrNull(row.transportDate),
-        transportTime: row.transportTime || '',
-        delayHours: Number(row.delayHours) || 0
+        transportTime: toTimeString(row.transportTime),
+        delayHours: Number(row.delayHours ?? 0) || 0
       }));
+    }
+
+    if (Array.isArray(container.actual.transportationBooked)) {
+      container.actual.transportationBooked = container.actual.transportationBooked.map((row) => {
+        const matchingStorage = (container.actual.storageSplits || []).find(
+          (split) => split.containerSerialNo === row.containerSerialNo
+        );
+        return {
+          ...toPlainObject(row),
+          delayHours: calculateDelayHours(
+            row.transportDate,
+            row.transportTime,
+            matchingStorage?.receivedOnDate,
+            matchingStorage?.receivedOnTime
+          )
+        };
+      });
     }
 
     if (Array.isArray(parsedDeliverySchedules)) {
@@ -919,25 +1047,65 @@ exports.updateStorageDetails = async (req, res) => {
     if (!container) return res.status(404).json({ message: 'Container not found' });
     if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
 
+    const files = normalizeUploadedFiles(req.files);
     const { storageSplits } = req.body;
     const parsedStorageSplits = parseJsonField(storageSplits);
     if (!Array.isArray(parsedStorageSplits)) {
       return res.status(400).json({ message: 'storageSplits must be an array' });
     }
 
-    container.actual.storageSplits = parsedStorageSplits.map((row) => ({
-      containerSerialNo: row.containerSerialNo || '',
-      warehouse: row.warehouse || '',
-      storageAvailability: Number(row.storageAvailability) || 0,
-      receivedOnDate: toDateOrNull(row.receivedOnDate),
-      receivedOnTime: row.receivedOnTime || '',
-      customsInspection: row.customsInspection || 'No',
-      grn: row.grn || '',
-      batch: row.batch || '',
-      productionDate: toDateOrNull(row.productionDate),
-      expiryDate: toDateOrNull(row.expiryDate),
-      remarks: row.remarks || ''
-    }));
+    container.actual.storageSplits = parsedStorageSplits.map((row, index) => {
+      const rowUpload = files[`storageSplits_${index}_document`]?.[0];
+      const existing = container.actual?.storageSplits?.[index] || {};
+      return {
+        containerSerialNo: row.containerSerialNo || '',
+        bags: Number(row.bags ?? 0) || 0,
+        warehouse: row.warehouse || '',
+        storageAvailability: Number(row.storageAvailability) || 0,
+        receivedOnDate: toDateOrNull(row.receivedOnDate),
+        receivedOnTime: toTimeString(row.receivedOnTime),
+        customsInspection: row.customsInspection || 'No',
+        grn: row.grn || '',
+        batch: row.batch || '',
+        productionDate: toDateOrNull(row.productionDate),
+        expiryDate: toDateOrNull(row.expiryDate),
+        remarks: row.remarks || '',
+        documentUrl: rowUpload ? undefined : (row.documentUrl || existing.documentUrl || ''),
+        documentName: rowUpload ? undefined : (row.documentName || existing.documentName || '')
+      };
+    });
+
+    for (let index = 0; index < container.actual.storageSplits.length; index++) {
+      const rowUpload = files[`storageSplits_${index}_document`]?.[0];
+      if (!rowUpload) continue;
+      const uploaded = await uploadBufferToS3(rowUpload, `shipments/storage/row-${index + 1}`);
+      container.actual.storageSplits[index].documentUrl = uploaded.url;
+      container.actual.storageSplits[index].documentName = uploaded.fileName;
+    }
+
+    const globalStorageDocument = files?.storageDocument?.[0];
+    if (globalStorageDocument) {
+      const uploaded = await uploadBufferToS3(globalStorageDocument, 'shipments/storage/global');
+      container.actual.storageDocumentUrl = uploaded.url;
+      container.actual.storageDocumentName = uploaded.fileName;
+    }
+
+    if (Array.isArray(container.actual.transportationBooked)) {
+      container.actual.transportationBooked = container.actual.transportationBooked.map((row) => {
+        const matchingStorage = container.actual.storageSplits.find(
+          (split) => split.containerSerialNo === row.containerSerialNo
+        );
+        return {
+          ...toPlainObject(row),
+          delayHours: calculateDelayHours(
+            row.transportDate,
+            row.transportTime,
+            matchingStorage?.receivedOnDate,
+            matchingStorage?.receivedOnTime
+          )
+        };
+      });
+    }
 
     await container.save();
     res.status(200).json({ message: 'Storage details updated successfully', container });
@@ -971,7 +1139,9 @@ exports.updateQualityDetails = async (req, res) => {
         const inhouseUpload = uploadedByField[`qualityRows_${index}_inhouse`];
         const strategicUpload = uploadedByField[`qualityRows_${index}_strategic`];
         const thirdPartyUpload = uploadedByField[`qualityRows_${index}_thirdParty`];
+        const attachmentUpload = uploadedByField[`qualityRows_${index}_attachment`];
         const existing = container.actual?.qualityRows?.[index] || {};
+        const existingReport = container.actual?.qualityReports?.[index] || {};
         return {
           sn: Number(row.sn) || index + 1,
           sampleNo: row.sampleNo || '',
@@ -988,7 +1158,10 @@ exports.updateQualityDetails = async (req, res) => {
           thirdPartyReportNo: row.thirdPartyReportNo || '',
           thirdPartyReportDate: toDateOrNull(row.thirdPartyReportDate),
           thirdPartyReportDocumentUrl: thirdPartyUpload?.url || row.thirdPartyReportDocumentUrl || existing.thirdPartyReportDocumentUrl || '',
-          thirdPartyReportDocumentName: thirdPartyUpload?.fileName || row.thirdPartyReportDocumentName || existing.thirdPartyReportDocumentName || ''
+          thirdPartyReportDocumentName: thirdPartyUpload?.fileName || row.thirdPartyReportDocumentName || existing.thirdPartyReportDocumentName || '',
+          remarks: row.remarks || existing.remarks || existingReport.remarks || '',
+          attachmentDocumentUrl: attachmentUpload?.url || row.attachmentDocumentUrl || existing.attachmentDocumentUrl || existingReport.documentUrl || '',
+          attachmentDocumentName: attachmentUpload?.fileName || row.attachmentDocumentName || existing.attachmentDocumentName || existingReport.documentName || ''
         };
       });
     }
@@ -1005,6 +1178,8 @@ exports.updateQualityDetails = async (req, res) => {
           documentName: reportUpload?.fileName || row.documentName || existing.documentName || ''
         };
       });
+    } else {
+      container.actual.qualityReports = [];
     }
 
     container.status = 'GRN';
@@ -1371,6 +1546,15 @@ exports.getShipmentById = async (req, res) => {
     const shipmentId = shipment._id;
     // Fetch all containers for this shipment
     const containers = await Container.find({ shipmentId }).sort({ createdAt: 1 });
+    const scheduledHistoryLogs = await logAudit
+      .find({
+        module: "Purchase",
+        entity: "Shipment",
+        entityId: shipmentId,
+        action: { $in: ["ScheduledBaselineCreated", "ScheduledBaselineUpdated"] },
+      })
+      .sort({ createdAt: -1 })
+      .populate("userId", "name email");
 
     // Planned array
     const planned = containers.map(c => ({
@@ -1379,6 +1563,8 @@ exports.getShipmentById = async (req, res) => {
       FCL: c.planned?.FCL,
       qtyMT: c.planned?.qtyMT,
       bags: c.planned?.bags,
+      etd: c.planned?.etd,
+      eta: c.planned?.eta,
       weekWiseShipment: c.planned?.weekWiseShipment,
       buyingUnit: c.planned?.buyingUnit,
       status: c.status
@@ -1423,6 +1609,7 @@ exports.getShipmentById = async (req, res) => {
             costSheetBookingDocumentName: a.costSheetBookingDocumentName,
             costSheetBookings: a.costSheetBookings || [],
             storageAllocations: a.storageAllocations || [],
+            maximumRetentionDate: a.maximumRetentionDate,
             DHL: a.DHL,
             courierTrackNo: a.courierTrackNo,
             courierServiceProvider: a.courierServiceProvider,
@@ -1448,7 +1635,9 @@ exports.getShipmentById = async (req, res) => {
             arrivalOn: a.arrivalOn,
             shipmentFreeRetentionDate: a.shipmentFreeRetentionDate,
             portRetentionWithPenaltyDate: a.portRetentionWithPenaltyDate,
+            maximumRetentionDate: a.maximumRetentionDate,
             arrivalNoticeDate: a.arrivalNoticeDate,
+            arrivalNoticeFreeRetentionDays: a.arrivalNoticeFreeRetentionDays,
             arrivalNoticeDocumentUrl: a.arrivalNoticeDocumentUrl,
             arrivalNoticeDocumentName: a.arrivalNoticeDocumentName,
             advanceRequestDate: a.advanceRequestDate,
@@ -1484,6 +1673,10 @@ exports.getShipmentById = async (req, res) => {
             warehouseSchedules: a.warehouseSchedules || [],
             transportationBooked: a.transportationBooked || [],
             storageSplits: a.storageSplits || [],
+            storageDocumentUrl: a.storageDocumentUrl || null,
+            storageDocumentName: a.storageDocumentName || null,
+            storageDocumentUrl: a.storageDocumentUrl,
+            storageDocumentName: a.storageDocumentName,
             qualityRows: a.qualityRows || [],
             qualityReports: a.qualityReports || [],
             paymentAllocations: a.paymentAllocations || [],
@@ -1558,6 +1751,7 @@ exports.getShipmentById = async (req, res) => {
         const inhouse = await toSignedDocument(qualityRow.inhouseReportDocumentUrl, qualityRow.inhouseReportDocumentName);
         const strategic = await toSignedDocument(qualityRow.strategicReportDocumentUrl, qualityRow.strategicReportDocumentName);
         const thirdParty = await toSignedDocument(qualityRow.thirdPartyReportDocumentUrl, qualityRow.thirdPartyReportDocumentName);
+        const attachment = await toSignedDocument(qualityRow.attachmentDocumentUrl, qualityRow.attachmentDocumentName);
         return {
           ...plainQualityRow,
           inhouseReportDocumentUrl: inhouse.url,
@@ -1566,6 +1760,8 @@ exports.getShipmentById = async (req, res) => {
           strategicReportDocumentName: strategic.name,
           thirdPartyReportDocumentUrl: thirdParty.url,
           thirdPartyReportDocumentName: thirdParty.name,
+          attachmentDocumentUrl: attachment.url,
+          attachmentDocumentName: attachment.name,
         };
       }));
 
@@ -1588,6 +1784,20 @@ exports.getShipmentById = async (req, res) => {
           refBillDocumentName: signed.name,
         };
       }));
+
+      row.storageSplits = await Promise.all((row.storageSplits || []).map(async (storageRow) => {
+        const plainStorageRow = toPlainObject(storageRow);
+        const signed = await toSignedDocument(storageRow.documentUrl, storageRow.documentName);
+        return {
+          ...plainStorageRow,
+          documentUrl: signed.url,
+          documentName: signed.name,
+        };
+      }));
+
+      const signedStorageDocument = await toSignedDocument(row.storageDocumentUrl, row.storageDocumentName);
+      row.storageDocumentUrl = signedStorageDocument.url;
+      row.storageDocumentName = signedStorageDocument.name;
     }
 
     const signedLpoUrl = shipment.lpoDocumentUrl
@@ -1621,6 +1831,12 @@ exports.getShipmentById = async (req, res) => {
         riceName: shipment.brandName || shipment.itemId?.riceName,
         packing: shipment.packing || shipment.itemId?.packing,
         piNo: shipment.piNo,
+        piDate: shipment.piDate,
+        portOfLoading: shipment.portOfLoading || null,
+        portOfDischarge: shipment.portOfDischarge || null,
+        fcl: shipment.fcl ?? null,
+        pallet: shipment.pallet ?? null,
+        bags: shipment.bags ?? null,
         totalOrderedQtyMT: shipment.totalOrderedQtyMT,
         plannedQtyMT: shipment.plannedQtyMT,
         actualQtyMT: shipment.actualQtyMT,
@@ -1649,7 +1865,23 @@ exports.getShipmentById = async (req, res) => {
         noOfShipments: shipment.noOfShipments
       },
       planned,
-      actual
+      actual,
+      scheduledHistory: scheduledHistoryLogs.map((entry) => ({
+        id: entry._id,
+        action: entry.action,
+        remarks: entry.remarks || "",
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+        user: entry.userId
+          ? {
+              id: entry.userId._id,
+              name: entry.userId.name || "",
+              email: entry.userId.email || "",
+            }
+          : null,
+        before: entry.before?.plannedContainers || [],
+        after: entry.after?.plannedContainers || [],
+      })),
     });
 
   } catch (err) {
@@ -1914,6 +2146,55 @@ exports.extractBillNo = async (req, res) => {
     return res.status(500).json({
       message: isNetwork
         ? 'Bill-no extraction service unavailable. Check PYTHON_BILLNO_API_URL/PYTHON_EXTRACTION_API_URL and that the Python service is running.'
+        : (err.message || 'Server error'),
+      error: err.message
+    });
+  }
+};
+
+exports.extractArrivalNotice = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'File is required' });
+    }
+
+    const baseUrl = (process.env.PYTHON_EXTRACTION_API_URL || 'http://localhost:8096').replace(/\/$/, '');
+    const endpoint = `${baseUrl}/arrival-notice/extract`;
+    const FormData = globalThis.FormData;
+    const form = new FormData();
+    const blob = new Blob([req.file.buffer], { type: req.file.mimetype || 'application/octet-stream' });
+    form.append('file', blob, req.file.originalname || 'arrival-notice');
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: form
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      let errJson;
+      try { errJson = JSON.parse(errText); } catch { errJson = { detail: errText }; }
+      return res.status(response.status).json({
+        message: errJson.detail || errJson.message || `Arrival notice extraction service returned ${response.status}`,
+        error: errJson
+      });
+    }
+
+    const pythonRes = await response.json();
+    const rawDays = pythonRes?.free_retension_days ?? pythonRes?.free_retention_days ?? '';
+    const freeRetentionDays = Number.parseInt(String(rawDays).match(/\d+/)?.[0] || '0', 10) || 0;
+
+    return res.status(200).json({
+      arrival_on: pythonRes?.arrival_on || null,
+      free_retension_days: freeRetentionDays,
+      metadata: pythonRes?.metadata || null,
+    });
+  } catch (err) {
+    console.error('Extract arrival notice error:', err);
+    const isNetwork = err.cause?.code === 'ECONNREFUSED' || err.code === 'ECONNREFUSED';
+    return res.status(500).json({
+      message: isNetwork
+        ? 'Arrival notice extraction service unavailable. Check PYTHON_EXTRACTION_API_URL and that the Python service is running.'
         : (err.message || 'Server error'),
       error: err.message
     });

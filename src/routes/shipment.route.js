@@ -73,6 +73,21 @@ router.post(
 );
 
 router.post(
+  '/extract-arrival-notice',
+  authMiddleware,
+  authorize(['Logistic','Admin']),
+  (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      }
+      next();
+    });
+  },
+  controller.extractArrivalNotice
+);
+
+router.post(
   '/container/planned',
   authMiddleware,
   authorize(['Purchase','Admin']),
@@ -155,6 +170,12 @@ router.patch(
   '/container/storage/:id',
   authMiddleware,
   authorize(['Logistic','Admin']),
+  (req, res, next) => {
+    upload.any()(req, res, (err) => {
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      next();
+    });
+  },
   controller.updateStorageDetails
 );
 

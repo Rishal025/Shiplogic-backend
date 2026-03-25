@@ -48,7 +48,9 @@ const actualContainerSchema = new mongoose.Schema({
   arrivalOn: { type: Date },
   shipmentFreeRetentionDate: { type: Date },
   portRetentionWithPenaltyDate: { type: Date },
+  maximumRetentionDate: { type: Date },
   arrivalNoticeDate: { type: Date },
+  arrivalNoticeFreeRetentionDays: { type: Number, default: 0 },
   arrivalNoticeDocumentUrl: { type: String },
   arrivalNoticeDocumentName: { type: String },
   advanceRequestDate: { type: Date },
@@ -138,9 +140,11 @@ const actualContainerSchema = new mongoose.Schema({
   storageAllocations: [{
     sn: { type: Number },
     containerSerialNo: { type: String },
+    bags: { type: Number },
     warehouse: { type: String },
     storageAvailability: { type: Number }
   }],
+  maximumRetentionDate: { type: Date },
   transportationBooked: [{
     sn: { type: Number },
     containerSerialNo: { type: String },
@@ -153,6 +157,7 @@ const actualContainerSchema = new mongoose.Schema({
   }],
   storageSplits: [{
     containerSerialNo: { type: String },
+    bags: { type: Number },
     warehouse: { type: String },
     storageAvailability: { type: Number },
     receivedOnDate: { type: Date },
@@ -162,8 +167,12 @@ const actualContainerSchema = new mongoose.Schema({
     batch: { type: String },
     productionDate: { type: Date },
     expiryDate: { type: Date },
-    remarks: { type: String }
+    remarks: { type: String },
+    documentUrl: { type: String },
+    documentName: { type: String }
   }],
+  storageDocumentUrl: { type: String },
+  storageDocumentName: { type: String },
   qualityRows: [{
     sn: { type: Number },
     sampleNo: { type: String },
@@ -181,6 +190,10 @@ const actualContainerSchema = new mongoose.Schema({
     thirdPartyReportDate: { type: Date },
     thirdPartyReportDocumentUrl: { type: String },
     thirdPartyReportDocumentName: { type: String }
+    ,
+    remarks: { type: String },
+    attachmentDocumentUrl: { type: String },
+    attachmentDocumentName: { type: String }
   }],
   qualityReports: [{
     phase: { type: String },
@@ -221,6 +234,8 @@ const containerSchema = new mongoose.Schema({
     qtyMT: { type: Number, default: 0 },
     bags: { type: Number, default: 0 },
     FCL: { type: Number },
+    etd: { type: Date },
+    eta: { type: Date },
     weekWiseShipment: { type: String },
     buyingUnit: { type: String, default: "MT" }
   },
