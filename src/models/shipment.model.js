@@ -78,13 +78,13 @@ const shipmentSchema = new mongoose.Schema({
       "Shipment Entry",
       "Planned Split",
       "Shipment Split",
-      "Payment Completed",
-      "Arrived",
-      "Documentation Completed",
-      "Under Clearance",
-      "Cleared",
-      "Released",
-      "GRN Completed"
+      "B/L Details",
+      "Documentation",
+      "Port & Customs",
+      "Storage",
+      "Quality",
+      "Payment Costing",
+      "Completed"
     ],
     default: "Shipment Entry"
   }

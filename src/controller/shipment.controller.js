@@ -87,6 +87,28 @@ const addDays = (dateValue, days) => {
   return result;
 };
 
+// Stage order — used to advance shipment status only forward
+const STAGE_ORDER = [
+  "Shipment Entry",
+  "Planned Split",
+  "Shipment Split",
+  "B/L Details",
+  "Documentation",
+  "Port & Customs",
+  "Storage",
+  "Quality",
+  "Payment Costing",
+  "Completed"
+];
+
+const advanceShipmentStage = (shipment, newStage) => {
+  const current = STAGE_ORDER.indexOf(shipment.currentStage);
+  const next = STAGE_ORDER.indexOf(newStage);
+  if (next > current) {
+    shipment.currentStage = newStage;
+  }
+};
+
 exports.createShipment = async (req, res) => {
   try {
     const {
@@ -602,6 +624,13 @@ exports.updateBLDetails = async (req, res) => {
 
     await container.save();
 
+    // Advance shipment stage to B/L Details
+    const shipmentForBL = await Shipment.findById(container.shipmentId);
+    if (shipmentForBL) {
+      advanceShipmentStage(shipmentForBL, 'B/L Details');
+      await shipmentForBL.save();
+    }
+
     res.status(200).json({
       message: 'B/L details updated successfully',
       container
@@ -681,6 +710,13 @@ exports.updateFASContainer = async (req, res) => {
 
     container.status = "Documented";
     await container.save();
+
+    // Advance shipment stage to Documentation
+    const shipmentForDoc = await Shipment.findById(container.shipmentId);
+    if (shipmentForDoc) {
+      advanceShipmentStage(shipmentForDoc, 'Documentation');
+      await shipmentForDoc.save();
+    }
 
     await logAudit({
       userId: req.user._id,
@@ -879,6 +915,13 @@ exports.updateLogisticsDetails = async (req, res) => {
 
     container.status = "Arrived";
     await container.save();
+
+    // Advance shipment stage to Port & Customs
+    const shipmentForLogistics = await Shipment.findById(container.shipmentId);
+    if (shipmentForLogistics) {
+      advanceShipmentStage(shipmentForLogistics, 'Port & Customs');
+      await shipmentForLogistics.save();
+    }
 
     const shipment = await Shipment.findById(container.shipmentId);
     if (!shipment) {
@@ -1108,6 +1151,14 @@ exports.updateStorageDetails = async (req, res) => {
     }
 
     await container.save();
+
+    // Advance shipment stage to Storage
+    const shipmentForStorage = await Shipment.findById(container.shipmentId);
+    if (shipmentForStorage) {
+      advanceShipmentStage(shipmentForStorage, 'Storage');
+      await shipmentForStorage.save();
+    }
+
     res.status(200).json({ message: 'Storage details updated successfully', container });
   } catch (err) {
     console.error(err);
@@ -1184,6 +1235,14 @@ exports.updateQualityDetails = async (req, res) => {
 
     container.status = 'GRN';
     await container.save();
+
+    // Advance shipment stage to Quality
+    const shipmentForQuality = await Shipment.findById(container.shipmentId);
+    if (shipmentForQuality) {
+      advanceShipmentStage(shipmentForQuality, 'Quality');
+      await shipmentForQuality.save();
+    }
+
     res.status(200).json({ message: 'Quality details updated successfully', container });
   } catch (err) {
     console.error(err);
@@ -1246,6 +1305,14 @@ exports.updatePaymentCostingDetails = async (req, res) => {
     }
 
     await container.save();
+
+    // Advance shipment stage to Payment Costing
+    const shipmentForPayment = await Shipment.findById(container.shipmentId);
+    if (shipmentForPayment) {
+      advanceShipmentStage(shipmentForPayment, 'Payment Costing');
+      await shipmentForPayment.save();
+    }
+
     res.status(200).json({ message: 'Payment costing updated successfully', container });
   } catch (err) {
     console.error(err);
