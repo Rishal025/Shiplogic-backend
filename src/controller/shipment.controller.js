@@ -1561,6 +1561,76 @@ exports.getShipmentSummary = async (req, res) => {
       { label: 'Late Vendor Shipments', value: Math.max(totalContainers - arrivedContainers, 0) }
     ];
 
+    // Chart Data Generation
+    const mapStageToStatus = (stage) => {
+      if (['Shipment Entry', 'Planned Split'].includes(stage)) return 'Yet to be scheduled';
+      if (['Shipment Split', 'B/L Details'].includes(stage)) return 'Goods on transit';
+      if (['Documentation'].includes(stage)) return 'At Port / Waiting for document';
+      if (['Port & Customs', 'Under Clearance'].includes(stage)) return 'At Port / Clearance on progress';
+      if (['Storage', 'Quality', 'Payment Costing', 'GRN Completed', 'Completed', 'Cleared', 'Released'].includes(stage)) return 'Delivered WH';
+      return 'Yet to be scheduled';
+    };
+
+    const mapStageToYearlyStatus = (stage) => {
+      if (['Shipment Entry', 'Planned Split', 'Shipment Split', 'B/L Details'].includes(stage)) return 'ETA yet to due';
+      if (['Documentation', 'Port & Customs', 'Under Clearance'].includes(stage)) return 'At the Port';
+      if (['Storage', 'Quality', 'Payment Costing', 'GRN Completed', 'Completed', 'Cleared', 'Released'].includes(stage)) return 'Delivered WH';
+      return 'ETA yet to due';
+    };
+
+    const qtyMappingMap = new Map();
+    const valueMappingMap = new Map();
+    const yearlyQtyMappingMap = new Map();
+    const supplierAvgFcMap = new Map();
+    const supplierYearlyQtyMap = new Map();
+
+    shipments.forEach(s => {
+      const itemDesc = s.itemId?.description || s.itemDescription || 'Unknown Item';
+      const supplierName = s.supplierId?.name || s.supplierName || 'Unknown Supplier';
+      const status = mapStageToStatus(s.currentStage);
+      const yearlyStatus = mapStageToYearlyStatus(s.currentStage);
+      const qty = Number(s.plannedQtyMT || 0);
+      const fc = Number(s.totalFC || 0);
+      const fcPerUnit = Number(s.fcPerUnit || 0);
+      
+      // 1. Qty Mapping
+      if (!qtyMappingMap.has(itemDesc)) qtyMappingMap.set(itemDesc, { rowLabel: itemDesc });
+      qtyMappingMap.get(itemDesc)[status] = (qtyMappingMap.get(itemDesc)[status] || 0) + qty;
+      
+      // 2. Value Mapping
+      if (!valueMappingMap.has(itemDesc)) valueMappingMap.set(itemDesc, { rowLabel: itemDesc });
+      valueMappingMap.get(itemDesc)[status] = (valueMappingMap.get(itemDesc)[status] || 0) + fc;
+
+      // 3. Yearly Qty Mapping
+      if (!yearlyQtyMappingMap.has(itemDesc)) yearlyQtyMappingMap.set(itemDesc, { rowLabel: itemDesc });
+      yearlyQtyMappingMap.get(itemDesc)[yearlyStatus] = (yearlyQtyMappingMap.get(itemDesc)[yearlyStatus] || 0) + qty;
+
+      // 4. Supplier Avg FC
+      if (!supplierAvgFcMap.has(itemDesc)) supplierAvgFcMap.set(itemDesc, { rowLabel: itemDesc });
+      const supAvg = supplierAvgFcMap.get(itemDesc);
+      if (!supAvg[`${supplierName}_sum`]) {
+        supAvg[`${supplierName}_sum`] = 0;
+        supAvg[`${supplierName}_count`] = 0;
+      }
+      supAvg[`${supplierName}_sum`] += fcPerUnit;
+      supAvg[`${supplierName}_count`] += 1;
+
+      // 5. Supplier Yearly Qty
+      if (!supplierYearlyQtyMap.has(supplierName)) supplierYearlyQtyMap.set(supplierName, { rowLabel: supplierName });
+      supplierYearlyQtyMap.get(supplierName)[yearlyStatus] = (supplierYearlyQtyMap.get(supplierName)[yearlyStatus] || 0) + qty;
+    });
+
+    const formatSupplierAvgFc = Array.from(supplierAvgFcMap.values()).map(row => {
+      const newRow = { rowLabel: row.rowLabel };
+      Object.keys(row).forEach(k => {
+        if (k.endsWith('_sum')) {
+          const supplier = k.replace('_sum', '');
+          newRow[supplier] = Number((row[`${supplier}_sum`] / row[`${supplier}_count`]).toFixed(2));
+        }
+      });
+      return newRow;
+    });
+
     res.status(200).json({
       kpis: {
         totalShipments: total,
@@ -1588,6 +1658,13 @@ exports.getShipmentSummary = async (req, res) => {
         inventory,
         financialPerformance,
         monthlyKpis
+      },
+      chartData: {
+        qtyMapping: Array.from(qtyMappingMap.values()),
+        valueMapping: Array.from(valueMappingMap.values()),
+        yearlyQtyMapping: Array.from(yearlyQtyMappingMap.values()),
+        supplierAvgFc: formatSupplierAvgFc,
+        supplierYearlyQty: Array.from(supplierYearlyQtyMap.values())
       }
     });
 
