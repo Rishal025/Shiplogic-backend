@@ -1360,13 +1360,13 @@ exports.getAllShipments = async (req, res) => {
       shipmentNo: s.shipmentNo,
       orderNumber: s.orderNumber,
       orderDate: s.orderDate,
-      supplier: s.supplierId?.name || null,
-      item: s.itemId?.description || null,
-      piNo: s.piNo,
-      totalQty: s.totalOrderedQtyMT,
-      split: s.totalSplitQtyMT || 0,
-      status: s.currentStage,
-      totalAmount: s.payment?.totalAmount || 0
+      supplier: s.supplierId?.name || s.supplierName || null,
+      description: s.itemId?.description || s.itemDescription || null,
+      buyingQty: s.plannedQtyMT || s.totalOrderedQtyMT || 0,
+      fcPerUnit: s.fcPerUnit || 0,
+      totalFC: s.totalFC || 0,
+      noOfShipments: s.noOfShipments || s.assumedContainerCount || 0,
+      status: s.currentStage
     }));
 
     res.json({
