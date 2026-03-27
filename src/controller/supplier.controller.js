@@ -1,4 +1,6 @@
 const Supplier = require('../models/supplier.model');
+const User = require('../models/auth.model');
+const Notification = require('../models/notification.model');
 const logAudit = require('../core/utils/auditLogger');
 
 // Create Supplier
@@ -11,6 +13,20 @@ exports.createSupplier = async (req, res) => {
     if (existing) return res.status(400).json({ message: "Supplier code already exists" });
 
     const supplier = await Supplier.create({ supplierCode, name, country });
+
+    const activeUsers = await User.find({ isActive: true }).select('_id').lean();
+    if (activeUsers.length) {
+      await Notification.insertMany(
+        activeUsers.map((user) => ({
+          userId: user._id,
+          type: 'supplier_registered',
+          title: 'Supplier registered',
+          message: `${name} (${supplierCode}) was registered successfully.`,
+          entity: 'Supplier',
+          entityId: supplier._id,
+        }))
+      );
+    }
 
     // Audit log
     await logAudit({

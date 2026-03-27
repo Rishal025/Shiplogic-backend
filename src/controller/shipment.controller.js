@@ -6,6 +6,8 @@ const Item = require('../models/item.model');
 const logAudit = require('../models/auditLog.model');
 const { uploadBufferToS3, createSignedGetUrl } = require('../core/utils/s3Upload');
 const mongoose = require('mongoose');
+const XLSX = require('xlsx');
+const PDFDocument = require('pdfkit');
 
 const parseJsonField = (value) => {
   if (value == null || value === '') return null;
@@ -85,6 +87,140 @@ const addDays = (dateValue, days) => {
   const result = new Date(date);
   result.setDate(result.getDate() + Number(days));
   return result;
+};
+
+const formatDateValue = (value) => {
+  const date = toDateOrNull(value);
+  if (!date) return '';
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  return `${day}/${month}/${year}`;
+};
+
+const formatDateTimeValue = (value) => {
+  const date = toDateOrNull(value);
+  if (!date) return '';
+  return date.toLocaleString('en-US', {
+    day: 'numeric',
+    month: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+};
+
+const SHIPMENT_REPORT_COLUMNS = [
+  { header: 'S/N', key: 'sn', width: 8 },
+  { header: 'Year', key: 'year', width: 10 },
+  { header: 'Shipment No.', key: 'shipmentNo', width: 24 },
+  { header: 'Date', key: 'date', width: 14 },
+  { header: 'Supplier', key: 'supplier', width: 28 },
+  { header: 'Country', key: 'country', width: 16 },
+  { header: 'Variant', key: 'variant', width: 18 },
+  { header: 'Item Description', key: 'itemDescription', width: 34 },
+  { header: 'Rice Name', key: 'riceName', width: 18 },
+  { header: 'Packing', key: 'packing', width: 12 },
+  { header: 'PI No.', key: 'piNo', width: 20 },
+  { header: 'CI No.', key: 'ciNo', width: 20 },
+  { header: 'FCL', key: 'fcl', width: 10 },
+  { header: 'Cont. Size', key: 'containerSize', width: 12 },
+  { header: 'Buying Unit', key: 'buyingUnit', width: 14 },
+  { header: 'Buying Qty (MT)', key: 'buyingQtyMT', width: 16 },
+  { header: 'FC per Unit', key: 'fcPerUnit', width: 14 },
+  { header: 'Total FC', key: 'totalFC', width: 16 },
+  { header: 'Inco Terms', key: 'incoterms', width: 14 },
+  { header: 'PO Number', key: 'poNumber', width: 20 },
+  { header: 'FPO Number', key: 'fpoNo', width: 20 },
+  { header: 'Bank Name', key: 'bankName', width: 18 },
+  { header: 'Payment Terms', key: 'paymentTerms', width: 18 },
+  { header: 'Current Stage', key: 'currentStage', width: 18 },
+  { header: 'No. of Shipments', key: 'noOfShipments', width: 16 },
+  { header: 'Port of Loading', key: 'portOfLoading', width: 20 },
+  { header: 'Port of Discharge', key: 'portOfDischarge', width: 20 },
+  { header: 'Planned ETD', key: 'plannedETD', width: 14 },
+  { header: 'Planned ETA', key: 'plannedETA', width: 14 },
+  { header: 'Advance Amount', key: 'advanceAmount', width: 16 },
+  { header: 'Bags', key: 'bags', width: 12 },
+  { header: 'Pallet', key: 'pallet', width: 12 },
+];
+
+const formatReportCellValue = (value, key) => {
+  if (value == null || value === '') return '';
+  if (typeof value === 'number') {
+    if (['fcPerUnit', 'totalFC', 'advanceAmount'].includes(key)) {
+      return Number(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    }
+    return value;
+  }
+  return String(value);
+};
+
+const buildShipmentReportRows = async () => {
+  const shipments = await Shipment.find({})
+    .populate('supplierId', 'name')
+    .populate('itemId', 'description')
+    .sort({ createdAt: -1, orderDate: -1 })
+    .lean();
+
+  const shipmentIds = shipments.map((shipment) => shipment._id);
+  const containers = await Container.find({ shipmentId: { $in: shipmentIds } })
+    .sort({ createdAt: 1 })
+    .lean();
+
+  const containerMap = new Map();
+  containers.forEach((container) => {
+    const key = String(container.shipmentId);
+    if (!containerMap.has(key)) {
+      containerMap.set(key, []);
+    }
+    containerMap.get(key).push(container);
+  });
+
+  const rows = shipments.map((shipment, index) => {
+    const shipmentContainers = containerMap.get(String(shipment._id)) || [];
+    const firstContainer = shipmentContainers[0] || null;
+    const actual = firstContainer?.actual || {};
+    const planned = firstContainer?.planned || {};
+
+    return {
+      sn: index + 1,
+      year: shipment.year || '',
+      shipmentNo: shipment.shipmentNo || '',
+      date: formatDateValue(shipment.orderDate),
+      supplier: shipment.supplierId?.name || shipment.supplierName || '',
+      country: shipment.countryOfOrigin || '',
+      variant: shipment.variant || '',
+      itemDescription: shipment.itemId?.description || shipment.itemDescription || '',
+      riceName: shipment.brandName || '',
+      packing: shipment.packing || '',
+      piNo: shipment.piNo || '',
+      ciNo: actual.commercialInvoiceNo || '',
+      fcl: actual.FCL ?? planned.FCL ?? shipment.fcl ?? '',
+      containerSize: actual.size || planned.size || shipment.containersize || '',
+      buyingUnit: actual.buyingUnit || planned.buyingUnit || shipment.buyunit || '',
+      buyingQtyMT: actual.qtyMT ?? planned.qtyMT ?? shipment.plannedQtyMT ?? '',
+      fcPerUnit: shipment.fcPerUnit ?? '',
+      totalFC: shipment.totalFC ?? '',
+      incoterms: shipment.incoterms || '',
+      poNumber: shipment.poNumber || '',
+      fpoNo: shipment.fpoNo || '',
+      bankName: shipment.bankName || '',
+      paymentTerms: shipment.paymentTerms || '',
+      currentStage: shipment.currentStage || '',
+      noOfShipments: shipment.noOfShipments ?? shipment.assumedContainerCount ?? '',
+      portOfLoading: shipment.portOfLoading || actual.portOfLoading || '',
+      portOfDischarge: shipment.portOfDischarge || actual.portOfDischarge || '',
+      plannedETD: formatDateValue(shipment.plannedETD || planned.etd || actual.updatedETD),
+      plannedETA: formatDateValue(shipment.plannedETA || planned.eta || actual.updatedETA),
+      advanceAmount: shipment.advanceAmount ?? '',
+      bags: actual.bags ?? planned.bags ?? shipment.bags ?? '',
+      pallet: actual.pallet ?? shipment.pallet ?? '',
+    };
+  });
+
+  return rows;
 };
 
 // Stage order — used to advance shipment status only forward
@@ -200,8 +336,30 @@ exports.createShipment = async (req, res) => {
       autoPoNumber = `RHST${yy}${mm}${String(runningNo).padStart(3, '0')}`;
     }
 
-    // Auto generate shipment number from generated PO number
-    const shipmentNo = `${autoPoNumber}-${1}(${plannedQtyMT}MT)`;
+    const extractPurchaseSuffix = (value) => {
+      const cleaned = String(value || '')
+        .toUpperCase()
+        .trim();
+
+      const poMatch = cleaned.match(/PO[\s\-_/]*([A-Z0-9]+)/);
+      if (poMatch?.[1]) {
+        return `PO${poMatch[1]}`;
+      }
+
+      const parts = cleaned.split(/[^A-Z0-9]+/).filter(Boolean);
+      const tail = parts[parts.length - 1];
+      return tail ? `PO${tail}` : 'PO00';
+    };
+
+    let shipmentRunningNo = (await Shipment.countDocuments()) + 1;
+    let trackerSerial = `RHST-${String(shipmentRunningNo).padStart(4, '0')}/${extractPurchaseSuffix(fpoNo || poNumber)}`;
+    while (await Shipment.exists({ shipmentNo: trackerSerial })) {
+      shipmentRunningNo += 1;
+      trackerSerial = `RHST-${String(shipmentRunningNo).padStart(4, '0')}/${extractPurchaseSuffix(fpoNo || poNumber)}`;
+    }
+
+    // Auto generate shipment number from running tracker sequence + source PO suffix
+    const shipmentNo = `${trackerSerial}-${1}(${plannedQtyMT}MT)`;
 
     const yearStr = orderDateObj.getFullYear();
 
@@ -1380,6 +1538,167 @@ exports.getAllShipments = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.getShipmentReportExportData = async (req, res) => {
+  try {
+    const rows = await buildShipmentReportRows();
+
+    return res.status(200).json({
+      rows,
+      totalRecords: rows.length,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Unable to prepare shipment export data' });
+  }
+};
+
+exports.downloadShipmentReportExcel = async (req, res) => {
+  try {
+    const rows = await buildShipmentReportRows();
+    const downloadedBy = req.user?.name || 'Royal Horizon User';
+    const downloadedAt = formatDateTimeValue(new Date());
+    const title = 'Royal Horizon Group';
+    const subtitle = 'Shipment Master Report';
+    const totalColumns = SHIPMENT_REPORT_COLUMNS.length;
+
+    const sheetData = [
+      [title],
+      [subtitle],
+      [`Downloaded By: ${downloadedBy}`, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', `Downloaded At: ${downloadedAt}`],
+      [],
+      SHIPMENT_REPORT_COLUMNS.map((column) => column.header),
+      ...rows.map((row) => SHIPMENT_REPORT_COLUMNS.map((column) => formatReportCellValue(row[column.key], column.key))),
+      [],
+      ['Printed from Royal Horizon Systems'],
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+    worksheet['!cols'] = SHIPMENT_REPORT_COLUMNS.map((column) => ({ wch: column.width }));
+    worksheet['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: totalColumns - 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: totalColumns - 1 } },
+      { s: { r: rows.length + 7, c: 0 }, e: { r: rows.length + 7, c: totalColumns - 1 } },
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Shipment Report');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    const filename = `royal-horizon-shipment-report-${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send(buffer);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'Unable to generate Excel report' });
+  }
+};
+
+exports.downloadShipmentReportPdf = async (req, res) => {
+  try {
+    const rows = await buildShipmentReportRows();
+    const downloadedBy = req.user?.name || 'Royal Horizon User';
+    const downloadedAt = formatDateTimeValue(new Date());
+    const filename = `royal-horizon-shipment-report-${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    const doc = new PDFDocument({
+      size: 'A3',
+      layout: 'landscape',
+      margin: 34,
+      bufferPages: true,
+    });
+
+    doc.pipe(res);
+
+    const pageWidth = doc.page.width;
+    const pageHeight = doc.page.height;
+    const startX = 34;
+    const usableWidth = pageWidth - startX * 2;
+    const tableTop = 120;
+    const rowHeight = 24;
+    const footerY = pageHeight - 24;
+    const totalWeight = SHIPMENT_REPORT_COLUMNS.reduce((sum, column) => sum + column.width, 0);
+    const columnWidths = SHIPMENT_REPORT_COLUMNS.map((column) => (column.width / totalWeight) * usableWidth);
+
+    const drawHeader = () => {
+      doc.font('Helvetica-Bold').fontSize(24).text('Royal Horizon Group', startX, 26, { align: 'center', width: usableWidth });
+      doc.font('Helvetica-Bold').fontSize(18).text('Shipment Master Report', startX, 56, { align: 'center', width: usableWidth });
+      doc.font('Helvetica').fontSize(12).text(`Downloaded By: ${downloadedBy}`, startX, 92, { align: 'left', width: usableWidth / 2 });
+      doc.font('Helvetica').fontSize(12).text(`Downloaded At: ${downloadedAt}`, startX, 92, { align: 'right', width: usableWidth });
+    };
+
+    const drawTableHeader = (y) => {
+      let x = startX;
+      doc.font('Helvetica-Bold').fontSize(8);
+      SHIPMENT_REPORT_COLUMNS.forEach((column, index) => {
+        const width = columnWidths[index];
+        doc.rect(x, y, width, rowHeight).fillAndStroke('#f1f5f9', '#0f172a');
+        doc.fillColor('#0f172a').text(column.header, x + 4, y + 7, {
+          width: width - 8,
+          ellipsis: true,
+        });
+        x += width;
+      });
+      doc.fillColor('#0f172a');
+    };
+
+    const drawRow = (row, y) => {
+      let x = startX;
+      doc.font('Helvetica').fontSize(7.5);
+      SHIPMENT_REPORT_COLUMNS.forEach((column, index) => {
+        const width = columnWidths[index];
+        doc.rect(x, y, width, rowHeight).stroke('#0f172a');
+        doc.text(String(formatReportCellValue(row[column.key], column.key)), x + 4, y + 7, {
+          width: width - 8,
+          ellipsis: true,
+        });
+        x += width;
+      });
+    };
+
+    drawHeader();
+    let currentY = tableTop;
+    drawTableHeader(currentY);
+    currentY += rowHeight;
+
+    rows.forEach((row) => {
+      if (currentY + rowHeight > footerY - 18) {
+        doc.addPage();
+        drawHeader();
+        currentY = tableTop;
+        drawTableHeader(currentY);
+        currentY += rowHeight;
+      }
+      drawRow(row, currentY);
+      currentY += rowHeight;
+    });
+
+    const range = doc.bufferedPageRange();
+    for (let i = range.start; i < range.start + range.count; i += 1) {
+      doc.switchToPage(i);
+      doc.font('Helvetica-Oblique').fontSize(12).text('Printed from Royal Horizon Systems', startX, footerY, {
+        align: 'center',
+        width: usableWidth,
+      });
+      doc.font('Helvetica').fontSize(12).text(`Page ${i + 1} of ${range.count}`, startX, footerY, {
+        align: 'right',
+        width: usableWidth,
+      });
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) {
+      return res.status(500).json({ message: 'Unable to generate PDF report' });
+    }
   }
 };
 

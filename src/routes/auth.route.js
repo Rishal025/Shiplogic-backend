@@ -9,6 +9,8 @@ const authorize = require('../core/utils/authorize'); // role-based access
 // =======================
 router.post('/login', authController.login);
 
+router.post('/change-password', authMiddleware, authController.changePassword);
+
 // =======================
 // CREATE USER - Admin only
 // =======================

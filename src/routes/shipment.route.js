@@ -228,6 +228,27 @@ router.get(
 );
 
 router.get(
+  '/reports/export-data',
+  authMiddleware,
+  authorize(['Purchase','FAS','Logistic','Admin']),
+  controller.getShipmentReportExportData
+);
+
+router.get(
+  '/reports/export/excel',
+  authMiddleware,
+  authorize(['Purchase','FAS','Logistic','Admin']),
+  controller.downloadShipmentReportExcel
+);
+
+router.get(
+  '/reports/export/pdf',
+  authMiddleware,
+  authorize(['Purchase','FAS','Logistic','Admin']),
+  controller.downloadShipmentReportPdf
+);
+
+router.get(
   '/:id',
   authMiddleware,
   authorize(['Purchase','FAS','Logistic','Admin']),
