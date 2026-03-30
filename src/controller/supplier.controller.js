@@ -2,17 +2,32 @@ const Supplier = require('../models/supplier.model');
 const User = require('../models/auth.model');
 const Notification = require('../models/notification.model');
 const logAudit = require('../core/utils/auditLogger');
+const { normalizeSupplierOnboardingState } = require('../core/utils/supplierOnboarding');
 
 // Create Supplier
 exports.createSupplier = async (req, res) => {
   try {
-    const { supplierCode, name, country } = req.body;
+    const { supplierCode, name, country, contactEmail, contactPersonName, contactPhone } = req.body;
 
     // Check if supplier code already exists
     const existing = await Supplier.findOne({ supplierCode });
     if (existing) return res.status(400).json({ message: "Supplier code already exists" });
 
-    const supplier = await Supplier.create({ supplierCode, name, country });
+    const supplier = await Supplier.create({
+      supplierCode,
+      name,
+      companyName: name,
+      country,
+      contactEmail,
+      contactPersonName,
+      contactPhone,
+      status: 'Active',
+      registrationStage: 'Draft',
+      profileCompletionPercent: 100,
+      profileCompletedAt: new Date(),
+      activatedAt: new Date(),
+      activatedBy: req.user._id,
+    });
 
     const activeUsers = await User.find({ isActive: true }).select('_id').lean();
     if (activeUsers.length) {
@@ -36,7 +51,17 @@ exports.createSupplier = async (req, res) => {
       entityId: supplier._id,
       action: "Created",
       before: {},
-      after: { supplierCode, name, country },
+      after: {
+        supplierCode,
+        name,
+        country,
+        contactEmail,
+        contactPersonName,
+        contactPhone,
+        status: 'Active',
+        registrationStage: 'Draft',
+        profileCompletionPercent: 100,
+      },
       remarks: "Supplier created"
     });
 
@@ -52,7 +77,14 @@ exports.getSupplierById = async (req, res) => {
   try {
     const supplier = await Supplier.findById(req.params.id);
     if (!supplier) return res.status(404).json({ message: "Supplier not found" });
-    res.json(supplier);
+    const onboardingState = normalizeSupplierOnboardingState(supplier);
+    res.json({
+      ...supplier.toObject(),
+      registrationStage: onboardingState.registrationStage,
+      profileCompletionPercent: onboardingState.profileCompletionPercent,
+      profileCompletedAt: onboardingState.profileCompletedAt,
+      missingFields: onboardingState.missingFields,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });

@@ -8,6 +8,7 @@ const shipmentSchema = new mongoose.Schema({
   supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: false },
   itemId: { type: mongoose.Schema.Types.ObjectId, ref: "Item" },
   supplierName: { type: String },
+  supplierEmail: { type: String, trim: true, lowercase: true },
   itemCode: { type: String },
   itemDescription: { type: String },
   commodity: { type: String },

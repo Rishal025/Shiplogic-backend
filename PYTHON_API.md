@@ -13,7 +13,7 @@ The backend calls the Python extraction service to extract shipment form data fr
 - **Content-Type:** `multipart/form-data`
 - **Body keys:**
   - `lpo_invoice` — file (Purchase order). From frontend: `document1`.
-  - `performa_invoice` — file (Performa Invoice). From frontend: `document2`.
+  - `rice_quality_report` — file (S1 Quality Report). From frontend: `s1QualityReport`.
   - `inco_terms_list` — string, e.g. `CIF,FOB,EXWORKS` (from `PYTHON_INCO_TERMS_LIST`).
   - `suppliers` — string, comma-separated supplier names (from `PYTHON_SUPPLIERS_LIST`).
 
@@ -24,15 +24,15 @@ curl -X 'POST' \
   'http://localhost:8096/shipment-form' \
   -H 'accept: application/json' \
   -H 'Content-Type: multipart/form-data' \
-  -F 'performa_invoice=@pi.pdf;type=application/pdf' \
   -F 'lpo_invoice=@lpo.pdf;type=application/pdf' \
+  -F 'rice_quality_report=@quality.pdf;type=application/pdf' \
   -F 'inco_terms_list=CIF,FOB,EXWORKS' \
   -F 'suppliers=LEKH RAJ,M RAHEEM RICE PROCESSING MILLS'
 ```
 
 ## Response (Python → Node)
 
-JSON with optional `lpo_invoice`, `performa_invoice`, and `metadata`:
+JSON with `lpo_invoice`, `shipment_calculations`, `s1_quality_report`, and `metadata`:
 
 ```json
 {
@@ -46,22 +46,6 @@ JSON with optional `lpo_invoice`, `performa_invoice`, and `metadata`:
     "quantity": "48,000.00",
     "unit": "9.80",
     "price": "470,400.00"
-  },
-  "performa_invoice": {
-    "supplier_details": "LEKH RAJ",
-    "inco_terms": "CIF",
-    "port_of_loading": null,
-    "port_of_discharge": "JEBEL ALI",
-    "pi_number": "LRNK-UAE-4309/25",
-    "pi_date": "2026-03-03",
-    "quantity": "480.000 MT (+/- 5%)",
-    "price_per_mton": "USD 985.00",
-    "total_price": "USD 472800.00",
-    "partial_shipment": null,
-    "shipment_terms": "IMMEDIATE SHIPMENT.",
-    "packaging": "4X10 KG NON WOVEN BAGS...",
-    "brand": "EXTERNAL BRAND",
-    "payment_terms": "100% CAD"
   },
   "metadata": {
     "input_tokens": 4342,

@@ -44,7 +44,6 @@ router.post(
   (req, res, next) => {
     upload.fields([
       { name: 'document1', maxCount: 1 },
-      { name: 'document2', maxCount: 1 },
       { name: 's1QualityReport', maxCount: 1 }
     ])(req, res, (err) => {
       if (err) {
@@ -98,6 +97,12 @@ router.patch(
   '/container/actual/:id',
   authMiddleware,
   authorize(['Purchase','Admin']),
+  (req, res, next) => {
+    upload.fields([{ name: 'blDocument', maxCount: 1 }])(req, res, (err) => {
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      next();
+    });
+  },
   controller.addActualContainer
 );
 

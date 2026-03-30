@@ -2,12 +2,16 @@
 const Shipment = require('../models/shipment.model');
 const Container = require('../models/container.model');
 const Supplier = require('../models/supplier.model');
+const SupplierAccount = require('../models/supplierAccount.model');
 const Item = require('../models/item.model');
 const logAudit = require('../models/auditLog.model');
 const { uploadBufferToS3, createSignedGetUrl } = require('../core/utils/s3Upload');
+const { calculateSupplierOnboardingState } = require('../core/utils/supplierOnboarding');
+const { sendSupplierInviteEmail } = require('../services/mail.service');
 const mongoose = require('mongoose');
 const XLSX = require('xlsx');
 const PDFDocument = require('pdfkit');
+const crypto = require('crypto');
 
 const parseJsonField = (value) => {
   if (value == null || value === '') return null;
@@ -157,6 +161,170 @@ const formatReportCellValue = (value, key) => {
   return String(value);
 };
 
+const hasValue = (value) => String(value ?? '').trim().length > 0;
+
+const generateTempPassword = (length = Number(process.env.INVITE_PASSWORD_LENGTH || 10)) => {
+  const targetLength = Number.isFinite(length) && length >= 8 ? length : 10;
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%';
+  const bytes = crypto.randomBytes(targetLength);
+  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('');
+};
+
+const generateSupplierCode = async () => {
+  let unique = false;
+  let code = '';
+
+  while (!unique) {
+    code = `SUP-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    // eslint-disable-next-line no-await-in-loop
+    const existing = await Supplier.findOne({ supplierCode: code }).lean();
+    if (!existing) {
+      unique = true;
+    }
+  }
+
+  return code;
+};
+
+const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const findSupplierByName = async (name) => {
+  if (!hasValue(name)) return null;
+  const normalizedName = escapeRegex(String(name).trim());
+  return Supplier.findOne({
+    $or: [{ name: new RegExp(`^${normalizedName}$`, 'i') }, { companyName: new RegExp(`^${normalizedName}$`, 'i') }],
+  });
+};
+
+const ensureSupplierPortalAccessForShipment = async (shipment) => {
+  const normalizedSupplierEmail = normalizeEmail(shipment?.supplierEmail);
+  if (!hasValue(normalizedSupplierEmail) || !hasValue(shipment?.supplierName)) {
+    return {
+      supplier: shipment?.supplierId ? await Supplier.findById(shipment.supplierId) : null,
+      supplierCreated: false,
+      inviteSent: null,
+      inviteStatusMessage: '',
+    };
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedSupplierEmail)) {
+    throw new Error('A valid supplierEmail is required before locking the baseline.');
+  }
+
+  let supplier = shipment?.supplierId ? await Supplier.findById(shipment.supplierId) : null;
+  let supplierAccount = null;
+  let supplierCreated = false;
+  let inviteSent = null;
+  let inviteStatusMessage = '';
+  let temporaryPassword = '';
+
+  if (supplier) {
+    supplierAccount = await SupplierAccount.findOne({ supplierId: supplier._id });
+  } else {
+    supplierAccount = await SupplierAccount.findOne({ email: normalizedSupplierEmail });
+    if (supplierAccount) {
+      supplier = await Supplier.findById(supplierAccount.supplierId);
+    }
+
+    if (!supplier) {
+      supplier = await Supplier.findOne({ contactEmail: normalizedSupplierEmail });
+      if (supplier) {
+        supplierAccount = await SupplierAccount.findOne({ supplierId: supplier._id });
+      }
+    }
+
+    if (!supplier) {
+      supplier = await findSupplierByName(shipment.supplierName);
+      if (supplier) {
+        supplierAccount = await SupplierAccount.findOne({ supplierId: supplier._id });
+      }
+    }
+  }
+
+  if (supplier && supplier.contactEmail && normalizeEmail(supplier.contactEmail) !== normalizedSupplierEmail) {
+    throw new Error('Supplier email does not match the existing supplier record.');
+  }
+
+  if (!supplier) {
+    if (!hasValue(shipment.countryOfOrigin)) {
+      throw new Error('Country of origin is required to create a new supplier invite.');
+    }
+
+    const supplierCode = await generateSupplierCode();
+    const onboardingState = calculateSupplierOnboardingState({
+      name: shipment.supplierName,
+      companyName: shipment.supplierName,
+      country: shipment.countryOfOrigin,
+      contactEmail: normalizedSupplierEmail,
+    });
+
+    supplier = await Supplier.create({
+      supplierCode,
+      name: shipment.supplierName,
+      companyName: shipment.supplierName,
+      country: shipment.countryOfOrigin,
+      status: 'Pending',
+      contactEmail: normalizedSupplierEmail,
+      registrationStage: onboardingState.registrationStage,
+      profileCompletionPercent: onboardingState.profileCompletionPercent,
+      profileCompletedAt: onboardingState.profileCompletedAt,
+    });
+
+    temporaryPassword = generateTempPassword();
+    supplierAccount = await SupplierAccount.create({
+      supplierId: supplier._id,
+      email: normalizedSupplierEmail,
+      password: temporaryPassword,
+      isActive: true,
+      mustChangePassword: true,
+    });
+    supplierCreated = true;
+  } else if (!supplierAccount) {
+    temporaryPassword = generateTempPassword();
+    supplierAccount = await SupplierAccount.create({
+      supplierId: supplier._id,
+      email: normalizedSupplierEmail,
+      password: temporaryPassword,
+      isActive: true,
+      mustChangePassword: true,
+    });
+    supplierCreated = true;
+  }
+
+  let supplierChanged = false;
+  if (supplier && !supplier.contactEmail) {
+    supplier.contactEmail = normalizedSupplierEmail;
+    supplierChanged = true;
+  }
+  if (supplier && !shipment.supplierId) {
+    shipment.supplierId = supplier._id;
+    supplierChanged = true;
+  }
+  if (supplierChanged) {
+    await supplier.save();
+    await shipment.save();
+  }
+
+  if (temporaryPassword && supplierAccount) {
+    try {
+      await sendSupplierInviteEmail({
+        to: supplierAccount.email,
+        supplierName: supplier.name || supplier.companyName || shipment.supplierName || 'Supplier',
+        temporaryPassword,
+      });
+      inviteSent = true;
+      inviteStatusMessage = 'Invite email sent successfully.';
+    } catch (mailError) {
+      inviteSent = false;
+      inviteStatusMessage = mailError.message || 'Supplier account was created, but invite email could not be sent.';
+    }
+  }
+
+  return { supplier, supplierCreated, inviteSent, inviteStatusMessage };
+};
+
 const buildShipmentReportRows = async () => {
   const shipments = await Shipment.find({})
     .populate('supplierId', 'name')
@@ -253,6 +421,7 @@ exports.createShipment = async (req, res) => {
       year,
       supplierId,
       supplierName,
+      supplierEmail,
       piNo,
       piDate,
       fpoNo,
@@ -296,16 +465,21 @@ exports.createShipment = async (req, res) => {
     // 1️⃣ Basic validation (itemId now optional)
     const parsedQ1Report = parseJsonField(q1Report);
 
-    if (!poNumber || !orderDate || !(supplierId || supplierName) || !plannedQtyMT || !piNo || !incoterms || !buyunit || !paymentTerms || !totalSplitQtyMT) {
+    if (!poNumber || !orderDate || !(supplierId || supplierName) || !plannedQtyMT || !piNo || !incoterms || !buyunit || !paymentTerms || !totalSplitQtyMT || !supplierEmail) {
       return res.status(400).json({ message: "Required fields missing" });
     }
-    if (!lpoDocument || !proformaDocument || !s1QualityReport) {
+    if (!lpoDocument || !s1QualityReport) {
       return res.status(400).json({
-        message: 'All 3 documents are required: lpoDocument, proformaDocument, s1QualityReport'
+        message: 'Required documents missing: lpoDocument and s1QualityReport are mandatory'
       });
     }
 
     // 2️⃣ Validate supplier
+    const normalizedSupplierEmail = normalizeEmail(supplierEmail);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedSupplierEmail)) {
+      return res.status(400).json({ message: 'A valid supplierEmail is required' });
+    }
+
     let supplier = null;
     if (supplierId) {
       supplier = await Supplier.findById(supplierId);
@@ -369,11 +543,12 @@ exports.createShipment = async (req, res) => {
     const totalAmount = qty * rate;
 
     // 4️⃣ Upload all mandatory documents to S3
-    const [lpoUpload, proformaUpload, s1Upload] = await Promise.all([
+    const uploads = await Promise.all([
       uploadBufferToS3(lpoDocument, 'shipments/lpo'),
-      uploadBufferToS3(proformaDocument, 'shipments/proforma'),
+      proformaDocument ? uploadBufferToS3(proformaDocument, 'shipments/proforma') : Promise.resolve(null),
       uploadBufferToS3(s1QualityReport, 'shipments/quality/s1')
     ]);
+    const [lpoUpload, proformaUpload, s1Upload] = uploads;
 
     // 5️⃣ Create shipment with persisted document URLs
     const shipment = await Shipment.create({
@@ -382,6 +557,7 @@ exports.createShipment = async (req, res) => {
       orderDate,
       supplierId: supplier?._id,
       supplierName: supplierName || supplier?.name || '',
+      supplierEmail: normalizedSupplierEmail,
       itemId: itemId || undefined,
       itemCode: itemCode || '',
       itemDescription: itemDescription || '',
@@ -415,8 +591,8 @@ exports.createShipment = async (req, res) => {
       q1Report: parsedQ1Report,
       lpoDocumentName: lpoUpload.fileName,
       lpoDocumentUrl: lpoUpload.url,
-      proformaDocumentName: proformaUpload.fileName,
-      proformaDocumentUrl: proformaUpload.url,
+      proformaDocumentName: proformaUpload?.fileName || '',
+      proformaDocumentUrl: proformaUpload?.url || '',
       s1QualityReportName: s1Upload.fileName,
       s1QualityReportUrl: s1Upload.url,
       payment: {
@@ -444,11 +620,11 @@ exports.createShipment = async (req, res) => {
     });
 
     return res.status(201).json({
-      message: "Shipment created successfully",
+      message: 'Shipment created successfully. Supplier invite will be checked when the baseline is locked.',
       data: shipment,
       documents: {
         lpo: { name: lpoUpload.fileName, url: lpoUpload.url },
-        proforma: { name: proformaUpload.fileName, url: proformaUpload.url },
+        proforma: proformaUpload ? { name: proformaUpload.fileName, url: proformaUpload.url } : null,
         s1QualityReport: { name: s1Upload.fileName, url: s1Upload.url }
       }
     });
@@ -528,6 +704,7 @@ exports.createPlannedContainersBulk = async (req, res) => {
     if (noOfShipments != null && noOfShipments !== '') shipment.noOfShipments = Number(noOfShipments);
     shipment.currentStage = "Planned Split";
     await shipment.save();
+    const supplierInviteResult = await ensureSupplierPortalAccessForShipment(shipment);
 
     const updatedPlannedSnapshot = processedContainers.map((container) => ({
       containerId: container._id,
@@ -562,7 +739,15 @@ exports.createPlannedContainersBulk = async (req, res) => {
     }
 
     res.status(200).json({
-      message: "Planned containers replaced successfully",
+      message:
+        supplierInviteResult.inviteSent === false
+          ? 'Planned containers replaced successfully, but the supplier invite email could not be sent.'
+          : supplierInviteResult.supplierCreated
+            ? 'Planned containers replaced successfully and the supplier invite email was sent.'
+            : 'Planned containers replaced successfully',
+      supplierCreated: supplierInviteResult.supplierCreated,
+      inviteSent: supplierInviteResult.inviteSent,
+      inviteStatusMessage: supplierInviteResult.inviteStatusMessage,
       shipment: {
         plannedQtyMT: shipment.plannedQtyMT,
         assumedContainerCount: shipment.assumedContainerCount,
@@ -585,6 +770,8 @@ exports.addActualContainer = async (req, res) => {
   try {
 
     const container = await Container.findById(req.params.id);
+    const files = req.files || {};
+    const blDocument = files?.blDocument?.[0];
 
 
     const {
@@ -657,6 +844,12 @@ exports.addActualContainer = async (req, res) => {
         : container.actual?.extractedContainers || [],
       receivedOn: new Date()
     };
+
+    if (blDocument) {
+      const uploaded = await uploadBufferToS3(blDocument, 'shipments/actual/bl-document');
+      container.actual.blDocumentUrl = uploaded.url;
+      container.actual.blDocumentName = uploaded.fileName;
+    }
 
     container.status = "Actual";
     await container.save();
@@ -916,6 +1109,7 @@ exports.updateLogisticsDetails = async (req, res) => {
       tokenReceivedDate,
       municipalityDate,
       municipalityRemarks,
+      sectionKey,
       transportationBooked,
       deliveryOrderDocumentUrl,
       deliveryOrderDate,
@@ -1087,7 +1281,7 @@ exports.updateLogisticsDetails = async (req, res) => {
     }
 
     res.status(200).json({
-      message: "Logistics details updated successfully",
+      message: sectionKey ? `${sectionKey} updated successfully` : "Logistics details updated successfully",
       container,
       shipment: {
         actualQtyMT: shipment.actualQtyMT,
@@ -1415,9 +1609,10 @@ exports.updatePaymentCostingDetails = async (req, res) => {
     if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
 
     const files = normalizeUploadedFiles(req.files);
-    const { paymentAllocations, paymentCostings } = req.body;
+    const { paymentAllocations, paymentCostings, packagingExpenses } = req.body;
     const parsedAllocations = parseJsonField(paymentAllocations);
     const parsedCostings = parseJsonField(paymentCostings);
+    const parsedPackagingExpenses = parseJsonField(packagingExpenses);
 
     const uploadedByField = {};
     for (const [field, list] of Object.entries(files)) {
@@ -1432,7 +1627,8 @@ exports.updatePaymentCostingDetails = async (req, res) => {
         sn: Number(row.sn) || index + 1,
         description: row.description || '',
         requestAmount: Number(row.requestAmount) || 0,
-        paidAmount: Number(row.paidAmount) || 0
+        paidAmount: Number(row.paidAmount) || 0,
+        reference: row.reference || ''
       }));
     }
 
@@ -1453,6 +1649,25 @@ exports.updatePaymentCostingDetails = async (req, res) => {
           refBillDocumentName: refUpload?.fileName || row.refBillDocumentName || existing.refBillDocumentName || ''
         };
       });
+    }
+
+    if (Array.isArray(parsedPackagingExpenses)) {
+      container.actual.packagingExpenses = parsedPackagingExpenses.map((row, index) => ({
+        sn: Number(row.sn) || index + 1,
+        item: row.item || '',
+        packing: row.packing || '',
+        qty: Number(row.qty) || 0,
+        uom: row.uom || '',
+        unitCostFC: Number(row.unitCostFC) || 0,
+        unitCostDH: Number(row.unitCostDH) || 0,
+        totalCostFC: Number(row.totalCostFC) || 0,
+        totalCostDH: Number(row.totalCostDH) || 0,
+        expenseAllocationFactor: Number(row.expenseAllocationFactor) || 0,
+        expensesAllocated: Number(row.expensesAllocated) || 0,
+        totalValueWithExpenses: Number(row.totalValueWithExpenses) || 0,
+        landedCostPerUnit: Number(row.landedCostPerUnit) || 0,
+        reference: row.reference || '',
+      }));
     }
 
     const overallDoc = files?.paymentCostingDocument?.[0];
@@ -2067,6 +2282,8 @@ exports.getShipmentById = async (req, res) => {
             maximumDetentionDays: a.maximumDetentionDays,
             freightPrepared: a.freightPrepared,
             billExtractionData: a.billExtractionData || null,
+            blDocumentUrl: a.blDocumentUrl,
+            blDocumentName: a.blDocumentName,
             extractedContainers: a.extractedContainers || [],
             costSheetBookingDocumentUrl: a.costSheetBookingDocumentUrl,
             costSheetBookingDocumentName: a.costSheetBookingDocumentName,
@@ -2144,6 +2361,7 @@ exports.getShipmentById = async (req, res) => {
             qualityReports: a.qualityReports || [],
             paymentAllocations: a.paymentAllocations || [],
             paymentCostings: a.paymentCostings || [],
+            packagingExpenses: a.packagingExpenses || [],
             paymentCostingDocumentUrl: a.paymentCostingDocumentUrl,
             paymentCostingDocumentName: a.paymentCostingDocumentName,
             paid_amount: a.paid_amount,
@@ -2168,6 +2386,10 @@ exports.getShipmentById = async (req, res) => {
       const signedStep3Doc = await toSignedDocument(row.costSheetBookingDocumentUrl, row.costSheetBookingDocumentName);
       row.costSheetBookingDocumentUrl = signedStep3Doc.url;
       row.costSheetBookingDocumentName = signedStep3Doc.name;
+
+      const signedBlDocument = await toSignedDocument(row.blDocumentUrl, row.blDocumentName);
+      row.blDocumentUrl = signedBlDocument.url;
+      row.blDocumentName = signedBlDocument.name;
 
       const signedInwardAdvice = await toSignedDocument(row.inwardCollectionAdviceDocumentUrl, row.inwardCollectionAdviceDocumentName);
       row.inwardCollectionAdviceDocumentUrl = signedInwardAdvice.url;
@@ -2335,11 +2557,19 @@ exports.getShipmentById = async (req, res) => {
         remarks: entry.remarks || "",
         createdAt: entry.createdAt,
         updatedAt: entry.updatedAt,
-        user: entry.userId
+        user: entry.userId || entry.after?.historyActorName || entry.before?.historyActorName
           ? {
-              id: entry.userId._id,
-              name: entry.userId.name || "",
-              email: entry.userId.email || "",
+              id: entry.userId?._id || entry.userId || null,
+              name:
+                (entry.userId && entry.userId.name) ||
+                entry.after?.historyActorName ||
+                entry.before?.historyActorName ||
+                "",
+              email:
+                (entry.userId && entry.userId.email) ||
+                entry.after?.historyActorEmail ||
+                entry.before?.historyActorEmail ||
+                "",
             }
           : null,
         before: entry.before?.plannedContainers || [],
@@ -2377,72 +2607,70 @@ function mapPythonResponseToExtraction(pythonRes) {
   if (!pythonRes || typeof pythonRes !== 'object') return out;
 
   const lpo = pythonRes.lpo_invoice || {};
-  const pi = pythonRes.performa_invoice || {};
+  const sc = pythonRes.shipment_calculations || {};
+
+  const mapBuyingUnit = (value) => {
+    const normalized = String(value || '').trim().toUpperCase();
+    if (!normalized) return undefined;
+    if (normalized === 'BAG' || normalized === 'BAGS') return 'Bag';
+    if (normalized === 'PALLET' || normalized === 'PALLETS') return 'Pallet';
+    if (normalized === 'KG' || normalized === 'MT') return normalized;
+    return undefined;
+  };
 
   // Shipment info
-  if (pi.pi_number != null && pi.pi_number !== '') out.piNo = String(pi.pi_number).trim();
-  if (pi.pi_date != null && pi.pi_date !== '') out.piDate = String(pi.pi_date).trim();
   if (lpo.po_number != null && lpo.po_number !== '') out.fpoNo = String(lpo.po_number).trim();
   if (lpo.po_date != null && lpo.po_date !== '') out.purchaseDate = String(lpo.po_date).trim();
-  if (pi.inco_terms != null && pi.inco_terms !== '') out.incoTerms = String(pi.inco_terms).trim();
-  if (pi.port_of_loading != null && pi.port_of_loading !== '') out.portOfLoading = String(pi.port_of_loading).trim();
-  if (pi.port_of_discharge != null && pi.port_of_discharge !== '') out.portOfDischarge = String(pi.port_of_discharge).trim();
+  if (lpo.inco_terms != null && lpo.inco_terms !== '') out.incoTerms = String(lpo.inco_terms).trim();
+  if (lpo.port_of_loading != null && lpo.port_of_loading !== '') out.portOfLoading = String(lpo.port_of_loading).trim();
+  if (lpo.port_of_discharge != null && lpo.port_of_discharge !== '') out.portOfDischarge = String(lpo.port_of_discharge).trim();
   if (lpo.commodity != null && lpo.commodity !== '') out.commodity = String(lpo.commodity).trim();
-  if (pi.brand != null && pi.brand !== '') out.brandName = String(pi.brand).trim();
-  const itemDesc = lpo.item ?? pi.item ?? '';
+  const itemDesc = lpo.item ?? '';
   if (itemDesc !== '') out.itemDescription = String(itemDesc).trim();
 
   // Supplier (Python returns names only)
-  const supplierName = pi.supplier_details ?? lpo.vendor ?? '';
+  const supplierName = lpo.vendor ?? '';
   if (supplierName !== '') out.supplierName = String(supplierName).trim();
 
   // Item
   if (lpo.item_code != null && lpo.item_code !== '') out.itemCode = String(lpo.item_code).trim();
 
-  // Packaging / quantity (lpo_invoice.packaging e.g. "10 Kg", or performa_invoice.packaging)
-  const packaging = pi.packaging ?? lpo.packaging;
+  // Packaging / quantity from lpo_invoice
+  const packaging = lpo.packaging;
   if (packaging != null && packaging !== '') out.packagingType = String(packaging).trim();
 
-  const qtyPi = pi.quantity;
-  if (qtyPi != null && qtyPi !== '') {
-    const parsed = parseNum(qtyPi);
-    if (parsed != null) out.plannedContainers = parsed;
-    if (/mt|mton|metric/i.test(String(qtyPi))) out.buyingUnit = 'MT';
-  }
-  const qtyLpo = lpo.quantity;
-  if (qtyLpo != null && qtyLpo !== '' && out.plannedContainers == null) {
-    const parsed = parseNum(qtyLpo);
+  const quantityInMt = sc.quantity_in_mt ?? lpo.quantity_in_mt ?? lpo.quantity;
+  if (quantityInMt != null && quantityInMt !== '') {
+    const parsed = parseNum(quantityInMt);
     if (parsed != null) out.plannedContainers = parsed;
   }
-  if (lpo.unit != null && lpo.unit !== '' && !out.buyingUnit) {
-    const u = String(lpo.unit).toUpperCase();
-    if (['MT', 'KG', 'BAG', 'PALLET'].includes(u)) out.buyingUnit = u === 'BAG' ? 'Bag' : u;
-  }
-  if (!out.buyingUnit) out.buyingUnit = 'MT';
+  const buyingUnit = mapBuyingUnit(lpo.buying_unit) ?? mapBuyingUnit(lpo.unit);
+  if (buyingUnit) out.buyingUnit = buyingUnit;
 
   // Price
-  const pricePerMton = pi.price_per_mton ?? pi.price_per_mt;
+  const pricePerMton = sc.price_per_mt ?? lpo.price_per_mton ?? lpo.price_per_mt;
   if (pricePerMton != null && pricePerMton !== '') {
     const n = parseNum(pricePerMton);
     if (n != null) out.fcPerUnit = n;
   }
-  const totalPrice = pi.total_price ?? lpo.price;
+  const totalPrice = lpo.total_amount ?? lpo.total_price ?? lpo.price;
   if (totalPrice != null && totalPrice !== '') {
     const n = parseNum(totalPrice);
     if (n != null) out.totalUSD = n;
   }
-  if (pi.payment_terms != null && pi.payment_terms !== '') out.paymentTerms = String(pi.payment_terms).trim();
+  if (lpo.payment_terms != null && lpo.payment_terms !== '') out.paymentTerms = String(lpo.payment_terms).trim();
 
   if (out.totalUSD != null && typeof out.totalUSD === 'number') {
     out.totalAED = Math.round(out.totalUSD * 3.67 * 100) / 100;
   }
 
-  // shipment_calculations: pass through and use for fcl, pallet, bags, containerSize
-  const sc = pythonRes.shipment_calculations;
+  // shipment_calculations: pass through and use for quantity, fcl, pallet, bags, containerSize
   if (sc && typeof sc === 'object') {
+    if (sc.quantity_in_mt != null) out.plannedContainers = Number(sc.quantity_in_mt);
     if (sc.fcl != null) out.fcl = Number(sc.fcl);
     if (sc.pallets != null) out.pallet = Number(sc.pallets);
     if (sc.bags != null) out.bags = Number(sc.bags);
+    if (sc.fcl_per_unit != null) out.fclPerUnit = Number(sc.fcl_per_unit);
     if (sc.container_size != null && sc.container_size !== '') {
       const size = String(sc.container_size).trim().toLowerCase();
       if (size.startsWith('40')) out.containerSize = '40';
@@ -2451,9 +2679,12 @@ function mapPythonResponseToExtraction(pythonRes) {
     out.shipmentCalculations = {
       fcl: sc.fcl != null ? Number(sc.fcl) : undefined,
       bags: sc.bags != null ? Number(sc.bags) : undefined,
+      quantity_in_mt: sc.quantity_in_mt != null ? Number(sc.quantity_in_mt) : undefined,
       container_size: sc.container_size != null ? String(sc.container_size) : undefined,
       bags_per_container: sc.bags_per_container != null ? Number(sc.bags_per_container) : undefined,
+      fcl_per_unit: sc.fcl_per_unit != null ? Number(sc.fcl_per_unit) : undefined,
       pallets: sc.pallets != null ? Number(sc.pallets) : undefined,
+      price_per_mt: sc.price_per_mt != null ? Number(sc.price_per_mt) : undefined,
       is_price_matching: sc.is_price_matching === true,
       lpo_price_per_mt: sc.lpo_price_per_mt != null ? Number(sc.lpo_price_per_mt) : undefined,
       pi_price_per_mt: sc.pi_price_per_mt != null ? Number(sc.pi_price_per_mt) : undefined,
@@ -2473,17 +2704,16 @@ function mapPythonResponseToExtraction(pythonRes) {
 
 // =======================
 // EXTRACT FROM DOCUMENTS — calls Python API, maps response to frontend shape
-// Frontend sends: document1 = Purchase order (LPO), document2 = Performa Invoice (PI), s1QualityReport
-// Python API expects: lpo_invoice, performa_invoice, rice_quality_report (with optional inco_terms_list, suppliers)
+// Frontend sends: document1 = Purchase order (LPO), s1QualityReport
+// Python API expects: lpo_invoice, rice_quality_report (with optional inco_terms_list, suppliers)
 // =======================
 exports.extractFromDocuments = async (req, res) => {
   try {
     const files = req.files;
-    // document1 = Purchase order → lpo_invoice, document2 = Performa Invoice → performa_invoice,
-    // s1QualityReport = quality report → rice_quality_report
-    if (!files?.document1?.[0] || !files?.document2?.[0] || !files?.s1QualityReport?.[0]) {
+    // document1 = Purchase order → lpo_invoice, s1QualityReport = quality report → rice_quality_report
+    if (!files?.document1?.[0] || !files?.s1QualityReport?.[0]) {
       return res.status(400).json({
-        message: 'Purchase order (document1), Pro-forma Invoice (document2), and S1 Quality Report (s1QualityReport) are required'
+        message: 'Purchase order (document1) and S1 Quality Report (s1QualityReport) are required'
       });
     }
 
@@ -2493,16 +2723,13 @@ exports.extractFromDocuments = async (req, res) => {
     const suppliersList = process.env.PYTHON_SUPPLIERS_LIST || '';
 
     const lpoFile = files.document1[0];
-    const piFile = files.document2[0];
     const qualityFile = files.s1QualityReport[0];
 
     const FormData = globalThis.FormData;
     const form = new FormData();
     const lpoBlob = new Blob([lpoFile.buffer], { type: lpoFile.mimetype || 'application/octet-stream' });
-    const piBlob = new Blob([piFile.buffer], { type: piFile.mimetype || 'application/octet-stream' });
     const qualityBlob = new Blob([qualityFile.buffer], { type: qualityFile.mimetype || 'application/octet-stream' });
     form.append('lpo_invoice', lpoBlob, lpoFile.originalname || 'lpo.pdf');
-    form.append('performa_invoice', piBlob, piFile.originalname || 'pi.pdf');
     form.append('rice_quality_report', qualityBlob, qualityFile.originalname || 'quality-report.pdf');
     form.append('inco_terms_list', incoTermsList);
     form.append('suppliers', suppliersList);

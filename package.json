@@ -15,8 +15,10 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.2.1",
     "multer": "^2.1.1",
+    "nodemailer": "^8.0.4",
     "nodemon": "^3.1.11",
     "pdfkit": "^0.18.0",
+    "socket.io": "^4.8.3",
     "xlsx": "^0.18.5"
   }
 }

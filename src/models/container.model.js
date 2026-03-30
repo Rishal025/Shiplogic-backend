@@ -125,6 +125,8 @@ const actualContainerSchema = new mongoose.Schema({
   maximumDetentionDays: { type: Number },
   freightPrepared: { type: String, enum: ['Yes', 'No'] },
   billExtractionData: { type: mongoose.Schema.Types.Mixed },
+  blDocumentUrl: { type: String },
+  blDocumentName: { type: String },
   extractedContainers: [{
     containerNo: { type: String },
     pkgCt: { type: Number }
@@ -206,7 +208,8 @@ const actualContainerSchema = new mongoose.Schema({
     sn: { type: Number },
     description: { type: String },
     requestAmount: { type: Number },
-    paidAmount: { type: Number }
+    paidAmount: { type: Number },
+    reference: { type: String }
   }],
   paymentCostings: [{
     sn: { type: Number },
@@ -219,6 +222,22 @@ const actualContainerSchema = new mongoose.Schema({
     refBillVendor: { type: String },
     refBillDocumentUrl: { type: String },
     refBillDocumentName: { type: String }
+  }],
+  packagingExpenses: [{
+    sn: { type: Number },
+    item: { type: String },
+    packing: { type: String },
+    qty: { type: Number },
+    uom: { type: String },
+    unitCostFC: { type: Number },
+    unitCostDH: { type: Number },
+    totalCostFC: { type: Number },
+    totalCostDH: { type: Number },
+    expenseAllocationFactor: { type: Number },
+    expensesAllocated: { type: Number },
+    totalValueWithExpenses: { type: Number },
+    landedCostPerUnit: { type: Number },
+    reference: { type: String }
   }],
   paymentCostingDocumentUrl: { type: String },
   paymentCostingDocumentName: { type: String }

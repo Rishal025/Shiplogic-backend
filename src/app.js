@@ -4,6 +4,8 @@ const bodyParser = require('body-parser');
 
 const authRoutes = require('./routes/auth.route');
 const supplierRoutes = require('./routes/supplier.route');
+const suppliersRoutes = require('./routes/suppliers.route');
+const supplierScheduleRoutes = require('./routes/supplierSchedule.route');
 const itemRoutes = require('./routes/item.route');
 const shipmentRoutes = require('./routes/shipment.route');
 const notificationRoutes = require('./routes/notification.route');
@@ -11,28 +13,32 @@ const notificationRoutes = require('./routes/notification.route');
 
 const app = express();
 
-// ─── Manual CORS middleware ───────────────────────────────────────────────────
-// Using raw headers instead of the cors package to guarantee compatibility
-// with Express 5. This runs on EVERY request before any auth middleware.
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+// CORS configuration
+const cors = require('cors');
+const allowedOrigins = (process.env.CLIENT_ORIGINS || '').split(',');
 
-  // Respond immediately to OPTIONS preflight — never let it reach auth middleware
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  next();
-});
-// ─────────────────────────────────────────────────────────────────────────────
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 app.use(bodyParser.json());
 
 // Routes
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/supplier', supplierRoutes);
+app.use('/api/v1/suppliers', suppliersRoutes);
+app.use('/api/v1/supplier-schedules', supplierScheduleRoutes);
 app.use('/api/v1/item', itemRoutes);
 app.use('/api/v1/shipment', shipmentRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
