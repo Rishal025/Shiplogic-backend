@@ -185,6 +185,19 @@ router.patch(
 );
 
 router.patch(
+  '/container/storage-row/:id/:rowIndex',
+  authMiddleware,
+  authorize(['Logistic','Admin']),
+  (req, res, next) => {
+    upload.any()(req, res, (err) => {
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      next();
+    });
+  },
+  controller.updateStorageArrivalRow
+);
+
+router.patch(
   '/container/quality/:id',
   authMiddleware,
   authorize(['Purchase','Admin']),

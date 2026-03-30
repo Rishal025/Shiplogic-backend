@@ -1518,6 +1518,70 @@ exports.updateStorageDetails = async (req, res) => {
   }
 };
 
+exports.updateStorageArrivalRow = async (req, res) => {
+  try {
+    const container = await Container.findById(req.params.id);
+    if (!container) return res.status(404).json({ message: 'Container not found' });
+    if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
+
+    const rowIndex = Number(req.params.rowIndex);
+    if (!Number.isInteger(rowIndex) || rowIndex < 0) {
+      return res.status(400).json({ message: 'Invalid row index' });
+    }
+
+    const files = normalizeUploadedFiles(req.files);
+    container.actual.storageSplits = Array.isArray(container.actual.storageSplits) ? container.actual.storageSplits : [];
+
+    const existing = container.actual.storageSplits[rowIndex] || {};
+    container.actual.storageSplits[rowIndex] = {
+      containerSerialNo: req.body.containerSerialNo || existing.containerSerialNo || '',
+      bags: Number(req.body.bags ?? existing.bags ?? 0) || 0,
+      warehouse: req.body.warehouse || existing.warehouse || '',
+      storageAvailability: Number(req.body.storageAvailability ?? existing.storageAvailability ?? 0) || 0,
+      receivedOnDate: req.body.receivedOnDate !== undefined ? toDateOrNull(req.body.receivedOnDate) : existing.receivedOnDate || null,
+      receivedOnTime: req.body.receivedOnTime !== undefined ? toTimeString(req.body.receivedOnTime) : existing.receivedOnTime || '',
+      customsInspection: req.body.customsInspection || existing.customsInspection || 'No',
+      grn: req.body.grn || existing.grn || '',
+      batch: req.body.batch || existing.batch || '',
+      productionDate: req.body.productionDate !== undefined ? toDateOrNull(req.body.productionDate) : existing.productionDate || null,
+      expiryDate: req.body.expiryDate !== undefined ? toDateOrNull(req.body.expiryDate) : existing.expiryDate || null,
+      remarks: req.body.remarks || existing.remarks || '',
+      documentUrl: req.body.documentUrl || existing.documentUrl || '',
+      documentName: req.body.documentName || existing.documentName || '',
+    };
+
+    const rowUpload = files?.storageRowDocument?.[0];
+    if (rowUpload) {
+      const uploaded = await uploadBufferToS3(rowUpload, `shipments/storage/row-${rowIndex + 1}`);
+      container.actual.storageSplits[rowIndex].documentUrl = uploaded.url;
+      container.actual.storageSplits[rowIndex].documentName = uploaded.fileName;
+    }
+
+    if (Array.isArray(container.actual.transportationBooked)) {
+      container.actual.transportationBooked = container.actual.transportationBooked.map((row) => {
+        const matchingStorage = container.actual.storageSplits.find(
+          (split) => split.containerSerialNo === row.containerSerialNo
+        );
+        return {
+          ...toPlainObject(row),
+          delayHours: calculateDelayHours(
+            row.transportDate,
+            row.transportTime,
+            matchingStorage?.receivedOnDate,
+            matchingStorage?.receivedOnTime
+          ),
+        };
+      });
+    }
+
+    await container.save();
+    res.json({ message: 'Storage arrival row updated successfully', container });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
 exports.updateQualityDetails = async (req, res) => {
   try {
     const container = await Container.findById(req.params.id);
