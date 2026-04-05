@@ -455,6 +455,8 @@ exports.createShipment = async (req, res) => {
       buyunit,
       totalSplitQtyMT,
       q1Report
+      ,
+      itemsJson
     } = req.body;
 
     const files = req.files || {};
@@ -464,8 +466,53 @@ exports.createShipment = async (req, res) => {
 
     // 1️⃣ Basic validation (itemId now optional)
     const parsedQ1Report = parseJsonField(q1Report);
+    const parsedItems = parseJsonField(itemsJson);
+    const normalizedLineItems = Array.isArray(parsedItems)
+      ? parsedItems.map((item, index) => {
+          const quantity = Number(item?.plannedContainers) || 0;
+          const price = Number(item?.fcPerUnit) || 0;
+          const total = item?.totalUSD != null && item?.totalUSD !== '' ? Number(item.totalUSD) : quantity * price;
+          return {
+            lineNo: Number(item?.lineNo) || index + 1,
+            itemCode: String(item?.itemCode || '').trim(),
+            itemDescription: String(item?.itemDescription || '').trim(),
+            commodity: String(item?.commodity || '').trim(),
+            countryOfOrigin: String(item?.countryOfOrigin || '').trim(),
+            brandName: String(item?.brandName || '').trim(),
+            packagingType: String(item?.packagingType || '').trim(),
+            containerSize: item?.containerSize != null && item?.containerSize !== '' ? String(item.containerSize).trim() : '',
+            plannedContainers: quantity,
+            fcl: Number(item?.fcl) || 0,
+            pallet: Number(item?.pallet) || 0,
+            bags: Number(item?.bags) || 0,
+            buyingUnit: String(item?.buyingUnit || '').trim(),
+            fclPerUnit: Number(item?.fclPerUnit) || 0,
+            fcPerUnit: price,
+            totalUSD: total,
+            totalAED: item?.totalAED != null && item?.totalAED !== '' ? Number(item.totalAED) : Math.round(total * 3.67 * 100) / 100,
+            expectedETD: toDateOrNull(item?.expectedETD),
+            expectedETA: toDateOrNull(item?.expectedETA)
+          };
+        }).filter((item) => item.itemCode || item.itemDescription || item.plannedContainers || item.totalUSD)
+      : [];
 
-    if (!poNumber || !orderDate || !(supplierId || supplierName) || !plannedQtyMT || !piNo || !incoterms || !buyunit || !paymentTerms || !totalSplitQtyMT || !supplierEmail) {
+    const derivedLineItems = normalizedLineItems.length ? normalizedLineItems : [];
+    const derivedQty = derivedLineItems.length ? derivedLineItems.reduce((sum, item) => sum + (item.plannedContainers || 0), 0) : Number(plannedQtyMT) || 0;
+    const derivedFcl = derivedLineItems.length ? derivedLineItems.reduce((sum, item) => sum + (item.fcl || 0), 0) : Number(fcl) || 0;
+    const derivedPallet = derivedLineItems.length ? derivedLineItems.reduce((sum, item) => sum + (item.pallet || 0), 0) : Number(pallet) || 0;
+    const derivedBags = derivedLineItems.length ? derivedLineItems.reduce((sum, item) => sum + (item.bags || 0), 0) : Number(bags) || 0;
+    const derivedTotalAmount = derivedLineItems.length ? derivedLineItems.reduce((sum, item) => sum + (item.totalUSD || 0), 0) : null;
+    const derivedRate = derivedLineItems.length
+      ? (derivedQty > 0 ? Number((derivedTotalAmount / derivedQty).toFixed(2)) : Number(derivedLineItems[0]?.fcPerUnit) || 0)
+      : Number(fcPerUnit) || 0;
+    const uniqueJoin = (values, fallback = '') => {
+      const cleaned = [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+      if (!cleaned.length) return fallback;
+      return cleaned.length === 1 ? cleaned[0] : `Multiple (${cleaned.length})`;
+    };
+    const primaryItem = derivedLineItems[0] || null;
+
+    if (!poNumber || !orderDate || !(supplierId || supplierName) || !(derivedQty || plannedQtyMT) || !piNo || !incoterms || !(buyunit || derivedLineItems.length) || !paymentTerms || !totalSplitQtyMT || !supplierEmail) {
       return res.status(400).json({ message: "Required fields missing" });
     }
     if (!lpoDocument || !s1QualityReport) {
@@ -533,14 +580,14 @@ exports.createShipment = async (req, res) => {
     }
 
     // Auto generate shipment number from running tracker sequence + source PO suffix
-    const shipmentNo = `${trackerSerial}-${1}(${plannedQtyMT}MT)`;
+    const shipmentNo = `${trackerSerial}-${1}(${derivedQty || plannedQtyMT}MT)`;
 
     const yearStr = orderDateObj.getFullYear();
 
-    const qty = Number(plannedQtyMT) || 0;
-    const rate = Number(fcPerUnit) || 0;
+    const qty = derivedQty;
+    const rate = derivedRate;
 
-    const totalAmount = qty * rate;
+    const totalAmount = derivedTotalAmount != null ? derivedTotalAmount : qty * rate;
 
     // 4️⃣ Upload all mandatory documents to S3
     const uploads = await Promise.all([
@@ -559,29 +606,31 @@ exports.createShipment = async (req, res) => {
       supplierName: supplierName || supplier?.name || '',
       supplierEmail: normalizedSupplierEmail,
       itemId: itemId || undefined,
-      itemCode: itemCode || '',
-      itemDescription: itemDescription || '',
-      commodity: commodity || '',
-      countryOfOrigin: countryOfOrigin || '',
-      brandName: brandName || '',
+      itemCode: uniqueJoin(derivedLineItems.map((item) => item.itemCode), itemCode || ''),
+      itemDescription: derivedLineItems.length > 1
+        ? `Multiple Items (${derivedLineItems.length})`
+        : (primaryItem?.itemDescription || itemDescription || ''),
+      commodity: uniqueJoin(derivedLineItems.map((item) => item.commodity), commodity || ''),
+      countryOfOrigin: uniqueJoin(derivedLineItems.map((item) => item.countryOfOrigin), countryOfOrigin || ''),
+      brandName: uniqueJoin(derivedLineItems.map((item) => item.brandName), brandName || ''),
       barcode: barcode || '',
       variant: variant || '',
       hsCode: hsCode || '',
-      packing: packing || '',
+      packing: uniqueJoin(derivedLineItems.map((item) => item.packagingType), packing || ''),
       portOfLoading: portOfLoading || '',
       portOfDischarge: portOfDischarge || '',
       shipmentNo,
       plannedQtyMT: qty,
       estimatedContainerCount,
       estimatedContainerSize,
-      plannedETD,
-      plannedETA,
+      plannedETD: primaryItem?.expectedETD || plannedETD,
+      plannedETA: primaryItem?.expectedETA || plannedETA,
       piNo,
       piDate: toDateOrNull(piDate),
       fpoNo,
-      fcl: Number(fcl) || 0,
-      pallet: Number(pallet) || 0,
-      bags: Number(bags) || 0,
+      fcl: derivedFcl,
+      pallet: derivedPallet,
+      bags: derivedBags,
       fcPerUnit: rate,
       totalFC,
       paymentTerms,
@@ -589,6 +638,7 @@ exports.createShipment = async (req, res) => {
       advanceAmount,
       advanceAmountDate,
       q1Report: parsedQ1Report,
+      lineItems: derivedLineItems,
       lpoDocumentName: lpoUpload.fileName,
       lpoDocumentUrl: lpoUpload.url,
       proformaDocumentName: proformaUpload?.fileName || '',
@@ -602,9 +652,9 @@ exports.createShipment = async (req, res) => {
         paymentStatus: "Pending"         // default
       },
       incoterms,
-      buyunit,
+      buyunit: uniqueJoin(derivedLineItems.map((item) => item.buyingUnit), buyunit || ''),
       totalSplitQtyMT,
-      containersize: estimatedContainerSize
+      containersize: Number(uniqueJoin(derivedLineItems.map((item) => item.containerSize), estimatedContainerSize || '')) || Number(estimatedContainerSize) || 0
     });
 
     // 6️⃣ Audit log
@@ -2601,6 +2651,29 @@ exports.getShipmentById = async (req, res) => {
         barcode: shipment.barcode,
         variant: shipment.variant,
         hsCode: shipment.hsCode,
+        lineItems: Array.isArray(shipment.lineItems)
+          ? shipment.lineItems.map((item) => ({
+              lineNo: item.lineNo ?? null,
+              itemCode: item.itemCode || null,
+              itemDescription: item.itemDescription || null,
+              commodity: item.commodity || null,
+              countryOfOrigin: item.countryOfOrigin || null,
+              brandName: item.brandName || null,
+              packagingType: item.packagingType || null,
+              containerSize: item.containerSize || null,
+              plannedContainers: item.plannedContainers ?? null,
+              fcl: item.fcl ?? null,
+              pallet: item.pallet ?? null,
+              bags: item.bags ?? null,
+              buyingUnit: item.buyingUnit || null,
+              fclPerUnit: item.fclPerUnit ?? null,
+              fcPerUnit: item.fcPerUnit ?? null,
+              totalUSD: item.totalUSD ?? null,
+              totalAED: item.totalAED ?? null,
+              expectedETD: item.expectedETD || null,
+              expectedETA: item.expectedETA || null,
+            }))
+          : [],
         lpoDocumentName: shipment.lpoDocumentName || null,
         lpoDocumentUrl: signedLpoUrl,
         proformaDocumentName: shipment.proformaDocumentName || null,
@@ -2673,6 +2746,19 @@ function mapPythonResponseToExtraction(pythonRes) {
   const lpo = pythonRes.lpo_invoice || {};
   const sc = pythonRes.shipment_calculations || {};
 
+  const getIndexedValue = (value, index) => {
+    if (Array.isArray(value)) return value[index];
+    return value;
+  };
+
+  const toContainerSizeValue = (value) => {
+    if (value == null || value === '') return undefined;
+    const size = String(value).trim().toLowerCase();
+    if (size.startsWith('40')) return '40';
+    if (size.startsWith('20')) return '20';
+    return undefined;
+  };
+
   const mapBuyingUnit = (value) => {
     const normalized = String(value || '').trim().toUpperCase();
     if (!normalized) return undefined;
@@ -2680,6 +2766,95 @@ function mapPythonResponseToExtraction(pythonRes) {
     if (normalized === 'PALLET' || normalized === 'PALLETS') return 'Pallet';
     if (normalized === 'KG' || normalized === 'MT') return normalized;
     return undefined;
+  };
+
+  const normalizeItemShape = (itemLike, index = 0) => {
+    const item = itemLike || {};
+    const line = {};
+
+    const lineItemCode = item.item_code ?? item.itemCode ?? getIndexedValue(lpo.item_code, index);
+    if (lineItemCode != null && lineItemCode !== '') line.itemCode = String(lineItemCode).trim();
+
+    const lineDescription = item.item ?? item.description ?? item.itemDescription ?? getIndexedValue(lpo.item, index);
+    if (lineDescription != null && lineDescription !== '') line.itemDescription = String(lineDescription).trim();
+
+    const lineCommodity = item.commodity ?? getIndexedValue(lpo.commodity, index);
+    if (lineCommodity != null && lineCommodity !== '') line.commodity = String(lineCommodity).trim();
+
+    const lineCountry = item.country_of_origin ?? item.countryOfOrigin ?? getIndexedValue(lpo.country_of_origin, index);
+    if (lineCountry != null && lineCountry !== '') line.countryOfOrigin = String(lineCountry).trim();
+
+    const linePackaging = item.packaging ?? item.packing ?? getIndexedValue(lpo.packaging, index);
+    if (linePackaging != null && linePackaging !== '') line.packagingType = String(linePackaging).trim();
+
+    const lineBuyingUnit = mapBuyingUnit(item.buying_unit ?? item.buyingUnit ?? item.unit ?? getIndexedValue(lpo.buying_unit, index) ?? getIndexedValue(lpo.unit, index));
+    if (lineBuyingUnit) line.buyingUnit = lineBuyingUnit;
+
+    const lineQuantityMt = item.quantity_in_mt ?? item.quantityInMt ?? getIndexedValue(sc.quantity_in_mt, index) ?? getIndexedValue(lpo.quantity_in_mt, index) ?? getIndexedValue(lpo.quantity, index);
+    const parsedQtyMt = parseNum(lineQuantityMt);
+    if (parsedQtyMt != null) line.plannedContainers = parsedQtyMt;
+
+    const lineFcl = item.fcl ?? getIndexedValue(sc.fcl, index);
+    const parsedFcl = parseNum(lineFcl);
+    if (parsedFcl != null) line.fcl = parsedFcl;
+
+    const linePallet = item.pallets ?? item.pallet ?? getIndexedValue(sc.pallets, index);
+    const parsedPallet = parseNum(linePallet);
+    if (parsedPallet != null) line.pallet = parsedPallet;
+
+    const lineBags = item.bags ?? item.quantity_in_bags ?? item.quantityInBags ?? getIndexedValue(sc.bags, index) ?? getIndexedValue(lpo.quantity_in_bags, index);
+    const parsedBags = parseNum(lineBags);
+    if (parsedBags != null) line.bags = parsedBags;
+
+    const lineFclPerUnit = item.fcl_per_unit ?? item.fclPerUnit ?? getIndexedValue(sc.fcl_per_unit, index);
+    const parsedFclPerUnit = parseNum(lineFclPerUnit);
+    if (parsedFclPerUnit != null) line.fclPerUnit = parsedFclPerUnit;
+
+    const linePrice = item.price_per_mt ?? item.pricePerMt ?? item.unit_price ?? item.unitPrice ?? getIndexedValue(sc.price_per_mt, index) ?? getIndexedValue(lpo.price_per_mt, index);
+    const parsedPrice = parseNum(linePrice);
+    if (parsedPrice != null) line.fcPerUnit = parsedPrice;
+
+    const lineTotal = item.total_amount ?? item.totalAmount ?? item.total_price ?? item.totalPrice ?? item.price ?? getIndexedValue(lpo.total_amount, index);
+    const parsedTotal = parseNum(lineTotal);
+    if (parsedTotal != null) {
+      line.totalUSD = parsedTotal;
+      line.totalAED = Math.round(parsedTotal * 3.67 * 100) / 100;
+    }
+
+    const lineContainerSize = toContainerSizeValue(item.container_size ?? item.containerSize ?? getIndexedValue(sc.container_size, index));
+    if (lineContainerSize) line.containerSize = lineContainerSize;
+
+    const lineNo = parseNum(item.line_no ?? item.lineNo ?? item.s_no ?? index + 1);
+    if (lineNo != null) line.lineNo = lineNo;
+
+    return line;
+  };
+
+  const inferItemsFromArrays = () => {
+    const candidateFields = [
+      lpo.item_code,
+      lpo.item,
+      lpo.commodity,
+      lpo.packaging,
+      lpo.buying_unit,
+      lpo.unit,
+      lpo.quantity_in_mt,
+      lpo.quantity_in_bags,
+      lpo.price_per_mt,
+      lpo.total_amount,
+      sc.quantity_in_mt,
+      sc.fcl,
+      sc.pallets,
+      sc.bags,
+      sc.fcl_per_unit,
+      sc.price_per_mt,
+      sc.container_size,
+    ];
+
+    const inferredLength = candidateFields.reduce((max, value) => (Array.isArray(value) ? Math.max(max, value.length) : max), 0);
+    if (!inferredLength) return [];
+
+    return Array.from({ length: inferredLength }, (_, index) => normalizeItemShape({}, index));
   };
 
   // Shipment info
@@ -2697,65 +2872,58 @@ function mapPythonResponseToExtraction(pythonRes) {
   if (supplierName !== '') out.supplierName = String(supplierName).trim();
 
   // Item
-  if (lpo.item_code != null && lpo.item_code !== '') out.itemCode = String(lpo.item_code).trim();
-
-  // Packaging / quantity from lpo_invoice
-  const packaging = lpo.packaging;
-  if (packaging != null && packaging !== '') out.packagingType = String(packaging).trim();
-
-  const quantityInMt = sc.quantity_in_mt ?? lpo.quantity_in_mt ?? lpo.quantity;
-  if (quantityInMt != null && quantityInMt !== '') {
-    const parsed = parseNum(quantityInMt);
-    if (parsed != null) out.plannedContainers = parsed;
-  }
-  const buyingUnit = mapBuyingUnit(lpo.buying_unit) ?? mapBuyingUnit(lpo.unit);
-  if (buyingUnit) out.buyingUnit = buyingUnit;
-
-  // Price
-  const pricePerMton = sc.price_per_mt ?? lpo.price_per_mton ?? lpo.price_per_mt;
-  if (pricePerMton != null && pricePerMton !== '') {
-    const n = parseNum(pricePerMton);
-    if (n != null) out.fcPerUnit = n;
-  }
-  const totalPrice = lpo.total_amount ?? lpo.total_price ?? lpo.price;
-  if (totalPrice != null && totalPrice !== '') {
-    const n = parseNum(totalPrice);
-    if (n != null) out.totalUSD = n;
-  }
   if (lpo.payment_terms != null && lpo.payment_terms !== '') out.paymentTerms = String(lpo.payment_terms).trim();
-
-  if (out.totalUSD != null && typeof out.totalUSD === 'number') {
-    out.totalAED = Math.round(out.totalUSD * 3.67 * 100) / 100;
-  }
 
   // shipment_calculations: pass through and use for quantity, fcl, pallet, bags, containerSize
   if (sc && typeof sc === 'object') {
-    if (sc.quantity_in_mt != null) out.plannedContainers = Number(sc.quantity_in_mt);
-    if (sc.fcl != null) out.fcl = Number(sc.fcl);
-    if (sc.pallets != null) out.pallet = Number(sc.pallets);
-    if (sc.bags != null) out.bags = Number(sc.bags);
-    if (sc.fcl_per_unit != null) out.fclPerUnit = Number(sc.fcl_per_unit);
-    if (sc.container_size != null && sc.container_size !== '') {
-      const size = String(sc.container_size).trim().toLowerCase();
-      if (size.startsWith('40')) out.containerSize = '40';
-      else if (size.startsWith('20')) out.containerSize = '20';
+    if (!Array.isArray(sc.quantity_in_mt) && sc.quantity_in_mt != null) out.plannedContainers = Number(sc.quantity_in_mt);
+    if (!Array.isArray(sc.fcl) && sc.fcl != null) out.fcl = Number(sc.fcl);
+    if (!Array.isArray(sc.pallets) && sc.pallets != null) out.pallet = Number(sc.pallets);
+    if (!Array.isArray(sc.bags) && sc.bags != null) out.bags = Number(sc.bags);
+    if (!Array.isArray(sc.fcl_per_unit) && sc.fcl_per_unit != null) out.fclPerUnit = Number(sc.fcl_per_unit);
+    if (!Array.isArray(sc.container_size)) {
+      const size = toContainerSizeValue(sc.container_size);
+      if (size) out.containerSize = size;
     }
     out.shipmentCalculations = {
-      fcl: sc.fcl != null ? Number(sc.fcl) : undefined,
-      bags: sc.bags != null ? Number(sc.bags) : undefined,
-      quantity_in_mt: sc.quantity_in_mt != null ? Number(sc.quantity_in_mt) : undefined,
-      container_size: sc.container_size != null ? String(sc.container_size) : undefined,
-      bags_per_container: sc.bags_per_container != null ? Number(sc.bags_per_container) : undefined,
-      fcl_per_unit: sc.fcl_per_unit != null ? Number(sc.fcl_per_unit) : undefined,
-      pallets: sc.pallets != null ? Number(sc.pallets) : undefined,
-      price_per_mt: sc.price_per_mt != null ? Number(sc.price_per_mt) : undefined,
+      fcl: !Array.isArray(sc.fcl) && sc.fcl != null ? Number(sc.fcl) : undefined,
+      bags: !Array.isArray(sc.bags) && sc.bags != null ? Number(sc.bags) : undefined,
+      quantity_in_mt: !Array.isArray(sc.quantity_in_mt) && sc.quantity_in_mt != null ? Number(sc.quantity_in_mt) : undefined,
+      container_size: !Array.isArray(sc.container_size) && sc.container_size != null ? String(sc.container_size) : undefined,
+      bags_per_container: !Array.isArray(sc.bags_per_container) && sc.bags_per_container != null ? Number(sc.bags_per_container) : undefined,
+      fcl_per_unit: !Array.isArray(sc.fcl_per_unit) && sc.fcl_per_unit != null ? Number(sc.fcl_per_unit) : undefined,
+      pallets: !Array.isArray(sc.pallets) && sc.pallets != null ? Number(sc.pallets) : undefined,
+      price_per_mt: !Array.isArray(sc.price_per_mt) && sc.price_per_mt != null ? Number(sc.price_per_mt) : undefined,
       is_price_matching: sc.is_price_matching === true,
-      lpo_price_per_mt: sc.lpo_price_per_mt != null ? Number(sc.lpo_price_per_mt) : undefined,
-      pi_price_per_mt: sc.pi_price_per_mt != null ? Number(sc.pi_price_per_mt) : undefined,
-      mt_variation: sc.mt_variation != null ? Number(sc.mt_variation) : undefined,
-      diff_percent: sc.diff_percent != null ? Number(sc.diff_percent) : undefined
+      lpo_price_per_mt: !Array.isArray(sc.lpo_price_per_mt) && sc.lpo_price_per_mt != null ? Number(sc.lpo_price_per_mt) : undefined,
+      pi_price_per_mt: !Array.isArray(sc.pi_price_per_mt) && sc.pi_price_per_mt != null ? Number(sc.pi_price_per_mt) : undefined,
+      mt_variation: !Array.isArray(sc.mt_variation) && sc.mt_variation != null ? Number(sc.mt_variation) : undefined,
+      diff_percent: !Array.isArray(sc.diff_percent) && sc.diff_percent != null ? Number(sc.diff_percent) : undefined
     };
   }
+
+  const rawItems = Array.isArray(lpo.items) ? lpo.items.map((item, index) => normalizeItemShape(item, index)) : inferItemsFromArrays();
+  out.items = (rawItems.length ? rawItems : [normalizeItemShape({}, 0)]).map((item, index) => ({
+    lineNo: item.lineNo ?? index + 1,
+    ...item,
+  }));
+
+  const firstItem = out.items[0] || {};
+  if (firstItem.itemCode) out.itemCode = firstItem.itemCode;
+  if (firstItem.itemDescription) out.itemDescription = firstItem.itemDescription;
+  if (firstItem.commodity) out.commodity = firstItem.commodity;
+  if (firstItem.countryOfOrigin) out.countryOfOrigin = firstItem.countryOfOrigin;
+  if (firstItem.packagingType) out.packagingType = firstItem.packagingType;
+  if (firstItem.plannedContainers != null) out.plannedContainers = firstItem.plannedContainers;
+  if (firstItem.buyingUnit) out.buyingUnit = firstItem.buyingUnit;
+  if (firstItem.fcPerUnit != null) out.fcPerUnit = firstItem.fcPerUnit;
+  if (firstItem.totalUSD != null) out.totalUSD = firstItem.totalUSD;
+  if (firstItem.totalAED != null) out.totalAED = firstItem.totalAED;
+  if (firstItem.fcl != null) out.fcl = firstItem.fcl;
+  if (firstItem.pallet != null) out.pallet = firstItem.pallet;
+  if (firstItem.bags != null) out.bags = firstItem.bags;
+  if (firstItem.fclPerUnit != null) out.fclPerUnit = firstItem.fclPerUnit;
+  if (firstItem.containerSize) out.containerSize = firstItem.containerSize;
 
   // S1 quality report payload from Python extraction response
   // Kept as nested object so frontend can use full extracted structure as needed.

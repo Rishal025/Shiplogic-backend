@@ -69,6 +69,39 @@ async function sendSupplierInviteEmail({ to, supplierName, temporaryPassword }) 
   });
 }
 
+async function sendInternalUserInviteEmail({ to, userName, role, temporaryPassword }) {
+  const transporter = getTransporter();
+  const { from } = getMailerConfig();
+  const portalUrl = process.env.INTERNAL_PORTAL_URL || 'http://localhost:4200/auth/login';
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: 'Royal Horizon Shipment Portal Access',
+    text: [
+      `Hello ${userName},`,
+      '',
+      'Your internal user account has been created for the Royal Horizon shipment portal.',
+      `Login URL: ${portalUrl}`,
+      `Email: ${to}`,
+      `Role: ${role}`,
+      `Temporary Password: ${temporaryPassword}`,
+      '',
+      'You will be required to change this password when you sign in for the first time.',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+        <p>Hello ${userName},</p>
+        <p>Your internal user account has been created for the Royal Horizon shipment portal.</p>
+        <p><strong>Login URL:</strong> <a href="${portalUrl}">${portalUrl}</a></p>
+        <p><strong>Email:</strong> ${to}<br/><strong>Role:</strong> ${role}<br/><strong>Temporary Password:</strong> ${temporaryPassword}</p>
+        <p>You will be required to change this password when you sign in for the first time.</p>
+      </div>
+    `,
+  });
+}
+
 module.exports = {
   sendSupplierInviteEmail,
+  sendInternalUserInviteEmail,
 };

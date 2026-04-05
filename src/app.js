@@ -9,6 +9,7 @@ const supplierScheduleRoutes = require('./routes/supplierSchedule.route');
 const itemRoutes = require('./routes/item.route');
 const shipmentRoutes = require('./routes/shipment.route');
 const notificationRoutes = require('./routes/notification.route');
+const accessControlRoutes = require('./routes/accessControl.route');
 // const logisticsRoutes = require('./modules/logistics/logistics.routes');
 
 const app = express();
@@ -42,6 +43,7 @@ app.use('/api/v1/supplier-schedules', supplierScheduleRoutes);
 app.use('/api/v1/item', itemRoutes);
 app.use('/api/v1/shipment', shipmentRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
+app.use('/api/v1/access-control', accessControlRoutes);
 
 app.get('/', (req, res) => res.send('Shipment Tracker Backend Running'));
 
