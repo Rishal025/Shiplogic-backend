@@ -190,6 +190,8 @@ const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const normalizeCatalogKey = (value) => String(value || '').trim().toUpperCase();
+
 const findSupplierByName = async (name) => {
   if (!hasValue(name)) return null;
   const normalizedName = escapeRegex(String(name).trim());
@@ -479,6 +481,10 @@ exports.createShipment = async (req, res) => {
             commodity: String(item?.commodity || '').trim(),
             countryOfOrigin: String(item?.countryOfOrigin || '').trim(),
             brandName: String(item?.brandName || '').trim(),
+            barcode: String(item?.barcode || '').trim(),
+            dmBarcode: String(item?.dmBarcode || '').trim(),
+            variant: String(item?.variant || '').trim(),
+            hsCode: String(item?.hsCode || '').trim(),
             packagingType: String(item?.packagingType || '').trim(),
             containerSize: item?.containerSize != null && item?.containerSize !== '' ? String(item.containerSize).trim() : '',
             plannedContainers: quantity,
@@ -512,8 +518,23 @@ exports.createShipment = async (req, res) => {
     };
     const primaryItem = derivedLineItems[0] || null;
 
-    if (!poNumber || !orderDate || !(supplierId || supplierName) || !(derivedQty || plannedQtyMT) || !piNo || !incoterms || !(buyunit || derivedLineItems.length) || !paymentTerms || !totalSplitQtyMT || !supplierEmail) {
-      return res.status(400).json({ message: "Required fields missing" });
+    const missingFields = [];
+    if (!poNumber) missingFields.push('poNumber');
+    if (!orderDate) missingFields.push('orderDate');
+    if (!(supplierId || supplierName)) missingFields.push('supplierIdOrSupplierName');
+    if (!(derivedQty || plannedQtyMT)) missingFields.push('plannedQtyMT');
+    if (!piNo) missingFields.push('piNo');
+    if (!incoterms) missingFields.push('incoterms');
+    if (!(buyunit || derivedLineItems.length)) missingFields.push('buyunit');
+    if (!paymentTerms) missingFields.push('paymentTerms');
+    if (!totalSplitQtyMT) missingFields.push('totalSplitQtyMT');
+    if (!supplierEmail) missingFields.push('supplierEmail');
+
+    if (missingFields.length) {
+      return res.status(400).json({
+        message: 'Required fields missing',
+        missingFields
+      });
     }
     if (!lpoDocument || !s1QualityReport) {
       return res.status(400).json({
@@ -613,9 +634,9 @@ exports.createShipment = async (req, res) => {
       commodity: uniqueJoin(derivedLineItems.map((item) => item.commodity), commodity || ''),
       countryOfOrigin: uniqueJoin(derivedLineItems.map((item) => item.countryOfOrigin), countryOfOrigin || ''),
       brandName: uniqueJoin(derivedLineItems.map((item) => item.brandName), brandName || ''),
-      barcode: barcode || '',
-      variant: variant || '',
-      hsCode: hsCode || '',
+      barcode: uniqueJoin(derivedLineItems.map((item) => item.barcode), barcode || ''),
+      variant: uniqueJoin(derivedLineItems.map((item) => item.variant), variant || ''),
+      hsCode: uniqueJoin(derivedLineItems.map((item) => item.hsCode), hsCode || ''),
       packing: uniqueJoin(derivedLineItems.map((item) => item.packagingType), packing || ''),
       portOfLoading: portOfLoading || '',
       portOfDischarge: portOfDischarge || '',
@@ -2659,6 +2680,10 @@ exports.getShipmentById = async (req, res) => {
               commodity: item.commodity || null,
               countryOfOrigin: item.countryOfOrigin || null,
               brandName: item.brandName || null,
+              barcode: item.barcode || null,
+              dmBarcode: item.dmBarcode || null,
+              variant: item.variant || null,
+              hsCode: item.hsCode || null,
               packagingType: item.packagingType || null,
               containerSize: item.containerSize || null,
               plannedContainers: item.plannedContainers ?? null,
@@ -2768,8 +2793,42 @@ function mapPythonResponseToExtraction(pythonRes) {
     return undefined;
   };
 
-  const normalizeItemShape = (itemLike, index = 0) => {
+  const parsePackagingKg = (value) => {
+    if (value == null || value === '') return undefined;
+    const match = String(value).toUpperCase().match(/1X\s*(\d+(?:\.\d+)?)\s*KG/);
+    if (!match) return undefined;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+
+  const allocateWholeUnits = (total, weights) => {
+    const normalizedTotal = parseNum(total);
+    if (normalizedTotal == null || normalizedTotal < 0) return [];
+
+    const normalizedWeights = weights.map((weight) => (Number.isFinite(Number(weight)) ? Math.max(Number(weight), 0) : 0));
+    const weightSum = normalizedWeights.reduce((sum, weight) => sum + weight, 0);
+    if (!weightSum) return [];
+
+    const rawShares = normalizedWeights.map((weight) => (normalizedTotal * weight) / weightSum);
+    const baseShares = rawShares.map((share) => Math.floor(share));
+    let remainder = Math.round(normalizedTotal - baseShares.reduce((sum, share) => sum + share, 0));
+
+    const byRemainder = rawShares
+      .map((share, index) => ({ index, remainder: share - baseShares[index] }))
+      .sort((a, b) => b.remainder - a.remainder);
+
+    for (let i = 0; i < byRemainder.length && remainder > 0; i += 1) {
+      baseShares[byRemainder[i].index] += 1;
+      remainder -= 1;
+    }
+
+    return baseShares;
+  };
+
+  const normalizeItemShape = (itemLike, index = 0, options = {}) => {
     const item = itemLike || {};
+    const itemCount = options.itemCount || 1;
+    const allowScalarShipmentFallback = itemCount === 1;
     const line = {};
 
     const lineItemCode = item.item_code ?? item.itemCode ?? getIndexedValue(lpo.item_code, index);
@@ -2790,15 +2849,29 @@ function mapPythonResponseToExtraction(pythonRes) {
     const lineBuyingUnit = mapBuyingUnit(item.buying_unit ?? item.buyingUnit ?? item.unit ?? getIndexedValue(lpo.buying_unit, index) ?? getIndexedValue(lpo.unit, index));
     if (lineBuyingUnit) line.buyingUnit = lineBuyingUnit;
 
-    const lineQuantityMt = item.quantity_in_mt ?? item.quantityInMt ?? getIndexedValue(sc.quantity_in_mt, index) ?? getIndexedValue(lpo.quantity_in_mt, index) ?? getIndexedValue(lpo.quantity, index);
+    const lineQuantityMt = item.quantity_in_mt
+      ?? item.quantityInMt
+      ?? getIndexedValue(lpo.quantity_in_mt, index)
+      ?? getIndexedValue(lpo.quantity, index);
     const parsedQtyMt = parseNum(lineQuantityMt);
-    if (parsedQtyMt != null) line.plannedContainers = parsedQtyMt;
+    if (parsedQtyMt != null) {
+      line.plannedContainers = parsedQtyMt;
+    } else {
+      const parsedBagQty = parseNum(item.quantity_in_bags ?? item.quantityInBags ?? getIndexedValue(lpo.quantity_in_bags, index));
+      const packagingKg = parsePackagingKg(item.packaging ?? item.packing ?? getIndexedValue(lpo.packaging, index));
+      if (parsedBagQty != null && packagingKg != null) {
+        line.plannedContainers = Number(((parsedBagQty * packagingKg) / 1000).toFixed(2));
+      } else if (allowScalarShipmentFallback) {
+        const fallbackQtyMt = parseNum(getIndexedValue(sc.quantity_in_mt, index));
+        if (fallbackQtyMt != null) line.plannedContainers = fallbackQtyMt;
+      }
+    }
 
-    const lineFcl = item.fcl ?? getIndexedValue(sc.fcl, index);
+    const lineFcl = item.fcl ?? (allowScalarShipmentFallback ? getIndexedValue(sc.fcl, index) : undefined);
     const parsedFcl = parseNum(lineFcl);
     if (parsedFcl != null) line.fcl = parsedFcl;
 
-    const linePallet = item.pallets ?? item.pallet ?? getIndexedValue(sc.pallets, index);
+    const linePallet = item.pallets ?? item.pallet ?? (allowScalarShipmentFallback ? getIndexedValue(sc.pallets, index) : undefined);
     const parsedPallet = parseNum(linePallet);
     if (parsedPallet != null) line.pallet = parsedPallet;
 
@@ -2806,11 +2879,17 @@ function mapPythonResponseToExtraction(pythonRes) {
     const parsedBags = parseNum(lineBags);
     if (parsedBags != null) line.bags = parsedBags;
 
-    const lineFclPerUnit = item.fcl_per_unit ?? item.fclPerUnit ?? getIndexedValue(sc.fcl_per_unit, index);
+    const lineFclPerUnit = item.fcl_per_unit ?? item.fclPerUnit ?? (allowScalarShipmentFallback ? getIndexedValue(sc.fcl_per_unit, index) : undefined);
     const parsedFclPerUnit = parseNum(lineFclPerUnit);
     if (parsedFclPerUnit != null) line.fclPerUnit = parsedFclPerUnit;
 
-    const linePrice = item.price_per_mt ?? item.pricePerMt ?? item.unit_price ?? item.unitPrice ?? getIndexedValue(sc.price_per_mt, index) ?? getIndexedValue(lpo.price_per_mt, index);
+    const linePrice = item.price_per_mt
+      ?? item.pricePerMt
+      ?? item.unit_price
+      ?? item.unitPrice
+      ?? item.unit
+      ?? (allowScalarShipmentFallback ? getIndexedValue(sc.price_per_mt, index) : undefined)
+      ?? getIndexedValue(lpo.price_per_mt, index);
     const parsedPrice = parseNum(linePrice);
     if (parsedPrice != null) line.fcPerUnit = parsedPrice;
 
@@ -2854,12 +2933,14 @@ function mapPythonResponseToExtraction(pythonRes) {
     const inferredLength = candidateFields.reduce((max, value) => (Array.isArray(value) ? Math.max(max, value.length) : max), 0);
     if (!inferredLength) return [];
 
-    return Array.from({ length: inferredLength }, (_, index) => normalizeItemShape({}, index));
+    return Array.from({ length: inferredLength }, (_, index) => normalizeItemShape({}, index, { itemCount: inferredLength }));
   };
 
   // Shipment info
   if (lpo.po_number != null && lpo.po_number !== '') out.fpoNo = String(lpo.po_number).trim();
   if (lpo.po_date != null && lpo.po_date !== '') out.purchaseDate = String(lpo.po_date).trim();
+  if (lpo.pi_number != null && lpo.pi_number !== '') out.piNo = String(lpo.pi_number).trim();
+  if (lpo.pi_date != null && lpo.pi_date !== '') out.piDate = String(lpo.pi_date).trim();
   if (lpo.inco_terms != null && lpo.inco_terms !== '') out.incoTerms = String(lpo.inco_terms).trim();
   if (lpo.port_of_loading != null && lpo.port_of_loading !== '') out.portOfLoading = String(lpo.port_of_loading).trim();
   if (lpo.port_of_discharge != null && lpo.port_of_discharge !== '') out.portOfDischarge = String(lpo.port_of_discharge).trim();
@@ -2902,7 +2983,38 @@ function mapPythonResponseToExtraction(pythonRes) {
     };
   }
 
-  const rawItems = Array.isArray(lpo.items) ? lpo.items.map((item, index) => normalizeItemShape(item, index)) : inferItemsFromArrays();
+  const itemCount = Array.isArray(lpo.items) ? lpo.items.length : 0;
+  const rawItems = Array.isArray(lpo.items)
+    ? lpo.items.map((item, index) => normalizeItemShape(item, index, { itemCount }))
+    : inferItemsFromArrays();
+
+  if (rawItems.length > 1) {
+    const itemWeights = rawItems.map((item) => item.plannedContainers || 0);
+
+    if (rawItems.some((item) => item.fcl == null)) {
+      const allocatedFcl = allocateWholeUnits(sc.fcl, itemWeights);
+      if (allocatedFcl.length === rawItems.length) {
+        rawItems.forEach((item, index) => {
+          if (item.fcl == null) item.fcl = allocatedFcl[index];
+        });
+      }
+    }
+
+    if (rawItems.some((item) => item.pallet == null)) {
+      const allocatedPallet = allocateWholeUnits(sc.pallets, itemWeights);
+      if (allocatedPallet.length === rawItems.length) {
+        rawItems.forEach((item, index) => {
+          if (item.pallet == null) item.pallet = allocatedPallet[index];
+        });
+      }
+    }
+
+    rawItems.forEach((item) => {
+      if ((item.fclPerUnit == null || item.fclPerUnit === 0) && item.fcl && item.totalUSD) {
+        item.fclPerUnit = Number((item.totalUSD / item.fcl).toFixed(2));
+      }
+    });
+  }
   out.items = (rawItems.length ? rawItems : [normalizeItemShape({}, 0)]).map((item, index) => ({
     lineNo: item.lineNo ?? index + 1,
     ...item,
@@ -2932,6 +3044,44 @@ function mapPythonResponseToExtraction(pythonRes) {
   }
 
   return out;
+}
+
+async function enrichExtractionItemsFromCatalog(data) {
+  if (!data || !Array.isArray(data.items) || !data.items.length) return data;
+
+  const rawItemCodes = [...new Set(data.items.map((item) => String(item?.itemCode || '').trim()).filter(Boolean))];
+  if (!rawItemCodes.length) return data;
+
+  const catalogItems = await Item.find({ itemCode: { $in: rawItemCodes } }).lean();
+  const catalogByCode = new Map(catalogItems.map((item) => [normalizeCatalogKey(item.itemCode), item]));
+
+  data.items = data.items.map((item) => {
+    const catalogItem = catalogByCode.get(normalizeCatalogKey(item?.itemCode));
+    if (!catalogItem) return item;
+
+    return {
+      ...item,
+      countryOfOrigin: item.countryOfOrigin || catalogItem.countryOfOrigin || '',
+      brandName: item.brandName || catalogItem.brand || catalogItem.riceName || '',
+      barcode: item.barcode || catalogItem.barcode || '',
+      dmBarcode: item.dmBarcode || catalogItem.dmBarcode || '',
+      variant: item.variant || catalogItem.variant || '',
+      hsCode: item.hsCode || catalogItem.hsCode || '',
+      packagingType: item.packagingType || catalogItem.packing || '',
+      buyingUnit: item.buyingUnit || catalogItem.unit || '',
+    };
+  });
+
+  const firstItem = data.items[0] || {};
+  if (firstItem.countryOfOrigin && !data.countryOfOrigin) data.countryOfOrigin = firstItem.countryOfOrigin;
+  if (firstItem.brandName && !data.brandName) data.brandName = firstItem.brandName;
+  if (firstItem.barcode && !data.barcode) data.barcode = firstItem.barcode;
+  if (firstItem.variant && !data.variant) data.variant = firstItem.variant;
+  if (firstItem.hsCode && !data.hsCode) data.hsCode = firstItem.hsCode;
+  if (firstItem.packagingType && !data.packagingType) data.packagingType = firstItem.packagingType;
+  if (firstItem.buyingUnit && !data.buyingUnit) data.buyingUnit = firstItem.buyingUnit;
+
+  return data;
 }
 
 // =======================
@@ -2982,7 +3132,7 @@ exports.extractFromDocuments = async (req, res) => {
     }
 
     const pythonRes = await response.json();
-    const data = mapPythonResponseToExtraction(pythonRes);
+    const data = await enrichExtractionItemsFromCatalog(mapPythonResponseToExtraction(pythonRes));
 
     return res.status(200).json({
       message: 'Data extracted successfully',

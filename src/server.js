@@ -3,6 +3,7 @@ const app = require('./app');
 const {databaseConnect} = require('./config/db');
 const {createFirstAdmin} = require('./config/createFirstAdmin');
 const { seedShipmentPermissionsAndDefaults } = require('./config/seedAccessControl');
+const { seedItemsFromCsv } = require('./config/seedItems');
 const User = require('./models/auth.model');
 const Notification = require('./models/notification.model');
 
@@ -115,7 +116,8 @@ server.on('error', (err) => {
         await databaseConnect(process.env.MONGO_URI);
         await createFirstAdmin();
         await seedShipmentPermissionsAndDefaults();
-        console.log('✅ Database connected, admin seeded, and access control seeded');
+        await seedItemsFromCsv();
+        console.log('✅ Database connected, admin seeded, access control seeded, and items seeded');
     } catch (err) {
         console.error('❌ Database connection error:', err.message);
         console.error('⚠️  Server is running but DB is unavailable — API calls will fail until DB reconnects');
