@@ -70,6 +70,7 @@ const actualContainerSchema = new mongoose.Schema({
   municipalityDocumentUrl: { type: String },
   municipalityDocumentName: { type: String },
   municipalityRemarks: { type: String },
+  lockedLogisticsSections: [{ type: String }],
 
   // Step 4 – Shipment Clearing Tracker (doc + date pairs; URLs for S3 later)
   deliveryOrderDocumentUrl: { type: String },

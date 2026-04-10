@@ -601,7 +601,7 @@ exports.createShipment = async (req, res) => {
     }
 
     // Auto generate shipment number from running tracker sequence + source PO suffix
-    const shipmentNo = `${trackerSerial}-${1}(${derivedQty || plannedQtyMT}MT)`;
+    const shipmentNo = trackerSerial;
 
     const yearStr = orderDateObj.getFullYear();
 
@@ -829,7 +829,7 @@ exports.createPlannedContainersBulk = async (req, res) => {
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error", error: err.message });
+    res.status(400).json({ message: err.message, error: err.message });
   }
 };
 
@@ -1337,6 +1337,17 @@ exports.updateLogisticsDetails = async (req, res) => {
     }
 
     container.status = "Arrived";
+
+    // Persist section lock if sectionKey is provided
+    if (sectionKey) {
+      if (!Array.isArray(container.actual.lockedLogisticsSections)) {
+        container.actual.lockedLogisticsSections = [];
+      }
+      if (!container.actual.lockedLogisticsSections.includes(sectionKey)) {
+        container.actual.lockedLogisticsSections.push(sectionKey);
+      }
+    }
+
     await container.save();
 
     // Advance shipment stage to Port & Customs
@@ -2487,6 +2498,7 @@ exports.getShipmentById = async (req, res) => {
             deliverySchedules: a.deliverySchedules || [],
             warehouseSchedules: a.warehouseSchedules || [],
             transportationBooked: a.transportationBooked || [],
+            lockedLogisticsSections: a.lockedLogisticsSections || [],
             storageSplits: a.storageSplits || [],
             storageDocumentUrl: a.storageDocumentUrl || null,
             storageDocumentName: a.storageDocumentName || null,
@@ -2639,6 +2651,7 @@ exports.getShipmentById = async (req, res) => {
         fpoNo: shipment.fpoNo,
         orderDate: shipment.orderDate,
         supplier: shipment.supplierName || shipment.supplierId?.name || null,
+        supplierEmail: shipment.supplierEmail || null,
         itemCode: shipment.itemCode || shipment.itemId?.itemCode || null,
         commodity: shipment.commodity || null,
         countryOfOrigin: shipment.countryOfOrigin || null,
@@ -2663,6 +2676,18 @@ exports.getShipmentById = async (req, res) => {
         assumedContainerCount: shipment.assumedContainerCount ?? shipment.totalSplitQtyMT,
         currentStage: shipment.currentStage,
         payment: shipment.payment.totalAmount,
+        totalAED: (() => {
+          // If lineItems exist and have totalAED, sum them up
+          if (Array.isArray(shipment.lineItems) && shipment.lineItems.length > 0) {
+            const sum = shipment.lineItems.reduce((acc, item) => acc + (Number(item.totalAED) || 0), 0);
+            if (sum > 0) return Math.round(sum * 100) / 100;
+          }
+          // Fallback: schema-level amountAED field
+          if (shipment.amountAED != null && shipment.amountAED > 0) return shipment.amountAED;
+          // Last resort: convert totalFC / payment amount at 3.67
+          const usd = Number(shipment.totalFC || shipment.payment?.totalAmount || 0);
+          return usd > 0 ? Math.round(usd * 3.67 * 100) / 100 : null;
+        })(),
         incoterms: shipment.incoterms,
         buyunit: shipment.buyunit,
         fcPerUnit: shipment.fcPerUnit,
