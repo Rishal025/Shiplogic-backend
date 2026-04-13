@@ -55,13 +55,16 @@ router.post(
   controller.extractFromDocuments
 );
 
-// Extract bill number from a single document (PDF or image) — calls Python purchase-tracker/bill-no
+// Extract bill number + packaging details from documents — calls Python purchase-tracker/fetch-details
 router.post(
   '/extract-bill-no',
   authMiddleware,
   authorize(['Purchase','Admin']),
   (req, res, next) => {
-    upload.single('file')(req, res, (err) => {
+    upload.fields([
+      { name: 'file', maxCount: 1 },
+      { name: 'packaging_list_file', maxCount: 1 }
+    ])(req, res, (err) => {
       if (err) {
         return res.status(400).json({ message: err.message || 'Invalid file upload' });
       }
@@ -98,7 +101,10 @@ router.patch(
   authMiddleware,
   authorize(['Purchase','Admin']),
   (req, res, next) => {
-    upload.fields([{ name: 'blDocument', maxCount: 1 }])(req, res, (err) => {
+    upload.fields([
+      { name: 'blDocument', maxCount: 1 },
+      { name: 'packaging_list_document', maxCount: 1 }
+    ])(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
       next();
     });

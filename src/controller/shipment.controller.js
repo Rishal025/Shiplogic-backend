@@ -866,8 +866,10 @@ exports.addActualContainer = async (req, res) => {
       maximumDetentionDays,
       freightPrepared,
       billExtractionData,
-      extractedContainers
+      extractedContainers,
+      packagingList
     } = req.body;
+    const packagingListDocument = req.files?.packaging_list_document?.[0];
 
 
     if (!container) {
@@ -906,13 +908,29 @@ exports.addActualContainer = async (req, res) => {
       freeDetentionDays: Number(freeDetentionDays) || container.actual?.freeDetentionDays || 0,
       maximumDetentionDays: Number(maximumDetentionDays) || container.actual?.maximumDetentionDays || 0,
       freightPrepared: freightPrepared || container.actual?.freightPrepared || 'No',
-      billExtractionData: billExtractionData || container.actual?.billExtractionData || null,
-      extractedContainers: Array.isArray(extractedContainers)
-        ? extractedContainers.map((row) => ({
-            containerNo: row.containerNo || row.container_no || '',
-            pkgCt: Number(row.pkgCt ?? row.pkg_ct) || 0
+      extractedContainers: Array.isArray(JSON.parse(extractedContainers || '[]'))
+        ? JSON.parse(extractedContainers || '[]').map((row) => ({
+            containerNo: row.containerNo || row.container_number || '',
+            pkgCt: Number(row.pkgCt ?? row.no_of_bags) || 0
           }))
         : container.actual?.extractedContainers || [],
+      packagingList: packagingList ? (() => {
+        const raw = JSON.parse(packagingList);
+        return {
+          brand: raw.brand || '',
+          expiryDate: raw.expiry_date || raw.expiryDate || '',
+          packingDescription: raw.packing_description || raw.packingDescription || '',
+          totalBags: Number(raw.total_bags ?? raw.totalBags) || 0,
+          totalGrossWeight: raw.total_gross_weight || raw.totalGrossWeight || '',
+          totalNetWeight: raw.total_net_weight || raw.totalNetWeight || '',
+          containerInfo: (raw.container_info || raw.containerInfo || []).map((ci) => ({
+            container_number: ci.container_number || ci.containerNumber || '',
+            no_of_bags: Number(ci.no_of_bags ?? ci.noOfBags) || 0,
+            gross_weight: ci.gross_weight || ci.grossWeight || '',
+            net_weight: ci.net_weight || ci.netWeight || ''
+          }))
+        };
+      })() : container.actual?.packagingList || null,
       receivedOn: new Date()
     };
 
@@ -920,6 +938,12 @@ exports.addActualContainer = async (req, res) => {
       const uploaded = await uploadBufferToS3(blDocument, 'shipments/actual/bl-document');
       container.actual.blDocumentUrl = uploaded.url;
       container.actual.blDocumentName = uploaded.fileName;
+    }
+    
+    if (packagingListDocument) {
+      const uploaded = await uploadBufferToS3(packagingListDocument, 'shipments/actual/packaging-list-document');
+      container.actual.packagingListDocumentUrl = uploaded.url;
+      container.actual.packagingListDocumentName = uploaded.fileName;
     }
 
     container.status = "Actual";
@@ -1000,11 +1024,23 @@ exports.updateBLDetails = async (req, res) => {
       maximumDetentionDays,
       freightPrepared,
       costSheetBookings,
-      storageAllocations
+      storageAllocations,
+      actualBags,
+      expiryDate,
+      hsCode,
+      packagingDate,
+      grossWeight,
+      netWeight,
+      packagingList
     } = req.body;
 
     const parsedCostSheetBookings = parseJsonField(costSheetBookings);
     const parsedStorageAllocations = parseJsonField(storageAllocations);
+    const parsedPackagingList = parseJsonField(packagingList);
+
+    if (parsedPackagingList) {
+      container.actual.packagingList = parsedPackagingList;
+    }
 
     if (blNo !== undefined) {
       container.actual.BLNo = blNo || '';
@@ -1020,6 +1056,13 @@ exports.updateBLDetails = async (req, res) => {
     if (freeDetentionDays !== undefined) container.actual.freeDetentionDays = Number(freeDetentionDays) || 0;
     if (maximumDetentionDays !== undefined) container.actual.maximumDetentionDays = Number(maximumDetentionDays) || 0;
     if (freightPrepared !== undefined) container.actual.freightPrepared = freightPrepared || 'No';
+
+    if (actualBags !== undefined) container.actual.actualBags = Number(actualBags) || 0;
+    if (expiryDate !== undefined) container.actual.expiryDate = toDateOrNull(expiryDate);
+    if (hsCode !== undefined) container.actual.hsCode = hsCode || '';
+    if (packagingDate !== undefined) container.actual.packagingDate = toDateOrNull(packagingDate);
+    if (grossWeight !== undefined) container.actual.grossWeight = grossWeight || '';
+    if (netWeight !== undefined) container.actual.netWeight = netWeight || '';
     if (Array.isArray(parsedCostSheetBookings)) {
       container.actual.costSheetBookings = parsedCostSheetBookings.map((row) => ({
         sn: Number(row.sn) || 0,
@@ -1079,6 +1122,7 @@ exports.updateFASContainer = async (req, res) => {
       courierTrackNo,
       courierServiceProvider,
       bankName,
+      docArrivalNotes,
       inwardCollectionAdviceDate,
       murabahaContractReleasedDate,
       murabahaContractApprovedDate,
@@ -1104,6 +1148,7 @@ exports.updateFASContainer = async (req, res) => {
     if (expectedDocDate !== undefined) container.actual.expectedDocDate = toDateOrNull(expectedDocDate);
     if (receiver !== undefined) container.actual.receiver = receiver;
     if (bankName !== undefined) container.actual.bankName = bankName || '';
+    if (docArrivalNotes !== undefined) container.actual.docArrivalNotes = docArrivalNotes || '';
     if (inwardCollectionAdviceDate !== undefined) container.actual.inwardCollectionAdviceDate = toDateOrNull(inwardCollectionAdviceDate);
     if (murabahaContractReleasedDate !== undefined) container.actual.murabahaContractReleasedDate = toDateOrNull(murabahaContractReleasedDate);
     if (murabahaContractApprovedDate !== undefined) container.actual.murabahaContractApprovedDate = toDateOrNull(murabahaContractApprovedDate);
@@ -1160,9 +1205,12 @@ exports.updateFASContainer = async (req, res) => {
 };
 
 exports.updateLogisticsDetails = async (req, res) => {
+  console.log('🚀 [Logistics] Received update request for container:', req.params.id);
   try {
     const container = await Container.findById(req.params.id);
     const files = req.files || {};
+    console.log('📦 [Logistics] Section Key:', req.body.sectionKey);
+    console.log('📄 [Logistics] Files attached:', Object.keys(files));
     const {
       arrivalOn,
       shipmentFreeRetentionDate,
@@ -1353,6 +1401,7 @@ exports.updateLogisticsDetails = async (req, res) => {
     // Advance shipment stage to Port & Customs
     const shipmentForLogistics = await Shipment.findById(container.shipmentId);
     if (shipmentForLogistics) {
+      console.log('📈 [Logistics] Advancing shipment stage to "Port & Customs"');
       advanceShipmentStage(shipmentForLogistics, 'Port & Customs');
       await shipmentForLogistics.save();
     }
@@ -1362,6 +1411,7 @@ exports.updateLogisticsDetails = async (req, res) => {
       return res.status(500).json({ message: "Shipment not found" });
     }
 
+    console.log('✅ [Logistics] Successfully updated section:', sectionKey || 'All');
     res.status(200).json({
       message: sectionKey ? `${sectionKey} updated successfully` : "Logistics details updated successfully",
       container,
@@ -1373,6 +1423,7 @@ exports.updateLogisticsDetails = async (req, res) => {
     });
 
   } catch (err) {
+    console.error('❌ [Logistics] Error updating logistics details:', err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -2430,6 +2481,15 @@ exports.getShipmentById = async (req, res) => {
             billExtractionData: a.billExtractionData || null,
             blDocumentUrl: a.blDocumentUrl,
             blDocumentName: a.blDocumentName,
+            packagingList: a.packagingList || null,
+            packagingListDocumentUrl: a.packagingListDocumentUrl,
+            packagingListDocumentName: a.packagingListDocumentName,
+            actualBags: a.actualBags,
+            expiryDate: a.expiryDate,
+            hsCode: a.hsCode,
+            packagingDate: a.packagingDate,
+            grossWeight: a.grossWeight,
+            netWeight: a.netWeight,
             extractedContainers: a.extractedContainers || [],
             costSheetBookingDocumentUrl: a.costSheetBookingDocumentUrl,
             costSheetBookingDocumentName: a.costSheetBookingDocumentName,
@@ -2537,6 +2597,10 @@ exports.getShipmentById = async (req, res) => {
       const signedBlDocument = await toSignedDocument(row.blDocumentUrl, row.blDocumentName);
       row.blDocumentUrl = signedBlDocument.url;
       row.blDocumentName = signedBlDocument.name;
+
+      const signedPkgDocument = await toSignedDocument(row.packagingListDocumentUrl, row.packagingListDocumentName);
+      row.packagingListDocumentUrl = signedPkgDocument.url;
+      row.packagingListDocumentName = signedPkgDocument.name;
 
       const signedInwardAdvice = await toSignedDocument(row.inwardCollectionAdviceDocumentUrl, row.inwardCollectionAdviceDocumentName);
       row.inwardCollectionAdviceDocumentUrl = signedInwardAdvice.url;
@@ -3180,60 +3244,61 @@ exports.extractFromDocuments = async (req, res) => {
 // =======================
 exports.extractBillNo = async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'File is required' });
+    const files = req.files || {};
+    const blFile = files.file?.[0];
+    const pkgFile = files.packaging_list_file?.[0];
+    const packagingBrand = req.body.packaging_brand || '';
+
+    if (!blFile) {
+      return res.status(400).json({ message: 'Bill of Lading file is required' });
     }
 
-    const baseUrl = (
-      process.env.PYTHON_EXTRACTION_API_URL
-    ).replace(/\/$/, '');
-    const configuredPath = process.env.PYTHON_BILLNO_PATH;
-    const candidatePaths = configuredPath
-      ? [configuredPath]
-      : ['/purchase-tracker/fetch-details'];
+    const baseUrl = (process.env.PYTHON_EXTRACTION_API_URL || 'http://localhost:8096').replace(/\/$/, '');
+    const endpoint = `${baseUrl}/purchase-tracker/fetch-details`;
 
     const FormData = globalThis.FormData;
-    let response = null;
-    let lastErrorPayload = null;
+    const form = new FormData();
+    
+    // Append BL file
+    const blBlob = new Blob([blFile.buffer], { type: blFile.mimetype || 'application/octet-stream' });
+    form.append('file', blBlob, blFile.originalname || 'document');
+    
+    // Append Packaging List file if provided
+    if (pkgFile) {
+      const pkgBlob = new Blob([pkgFile.buffer], { type: pkgFile.mimetype || 'application/octet-stream' });
+      form.append('packaging_list_file', pkgBlob, pkgFile.originalname || 'packaging_list');
+    }
+    
+    // Append Brand
+    if (packagingBrand) {
+      form.append('packaging_brand', packagingBrand);
+    }
 
-    for (const path of candidatePaths) {
-      const endpoint = `${baseUrl}/${String(path).replace(/^\/+/, '')}`;
-      console.log("endpoint", endpoint);
-      const form = new FormData();
-      const blob = new Blob([req.file.buffer], { type: req.file.mimetype || 'application/octet-stream' });
-      form.append('file', blob, req.file.originalname || 'document');
+    console.log("Calling extraction endpoint:", endpoint);
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: form
+    });
 
-      response = await fetch(endpoint, {
-        method: 'POST',
-        body: form
-      });
-
-      if (response.ok) break;
-
+    if (!response.ok) {
       const errText = await response.text();
       let errJson;
       try { errJson = JSON.parse(errText); } catch { errJson = { detail: errText }; }
-      lastErrorPayload = { endpoint, status: response.status, error: errJson };
-
-      // Common endpoint mismatch; try next candidate route.
-      if ([404, 405].includes(response.status)) continue;
       return res.status(response.status).json({
-        message: errJson.detail || errJson.message || `Bill-no extraction service returned ${response.status}`,
-        error: { ...errJson, endpoint }
-      });
-    }
-
-    if (!response || !response.ok) {
-      return res.status(lastErrorPayload?.status || 502).json({
-        message: 'Bill-no extraction endpoint mismatch. Check Python bill-no route configuration.',
-        error: lastErrorPayload || {}
+        message: errJson.detail || errJson.message || `Extraction service returned ${response.status}`,
+        error: errJson
       });
     }
 
     const pythonRes = await response.json();
+    
+    // Standardize response for frontend
     return res.status(200).json({
-      bill_no: pythonRes.bill_no || pythonRes.billNo || pythonRes.data?.bill_no || '',
-      invoice_number: pythonRes.invoice_number || pythonRes.invoiceNumber || pythonRes.data?.invoice_number || '',
+      bill_extracted_data: pythonRes.bill_extracted_data || pythonRes.bill_no_data || {},
+      packaging_list: pythonRes.packaging_list || {},
+      // Backwards compatibility if needed
+      bill_no: pythonRes.bill_extracted_data?.bill_no || '',
+      invoice_number: pythonRes.bill_extracted_data?.invoice_number || '',
       metadata: pythonRes.metadata,
       ...pythonRes
     });

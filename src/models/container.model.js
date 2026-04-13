@@ -132,6 +132,28 @@ const actualContainerSchema = new mongoose.Schema({
     containerNo: { type: String },
     pkgCt: { type: Number }
   }],
+  packagingList: {
+    brand: { type: String },
+    expiryDate: { type: String },
+    packingDescription: { type: String },
+    totalBags: { type: Number },
+    totalGrossWeight: { type: String },
+    totalNetWeight: { type: String },
+    containerInfo: [{
+      container_number: { type: String },
+      no_of_bags: { type: Number },
+      gross_weight: { type: String },
+      net_weight: { type: String }
+    }]
+  },
+  packagingListDocumentUrl: { type: String },
+  packagingListDocumentName: { type: String },
+  actualBags: { type: Number },
+  expiryDate: { type: Date },
+  hsCode: { type: String },
+  packagingDate: { type: Date },
+  grossWeight: { type: String },
+  netWeight: { type: String },
   costSheetBookingDocumentUrl: { type: String },
   costSheetBookingDocumentName: { type: String },
   costSheetBookings: [{
@@ -170,6 +192,9 @@ const actualContainerSchema = new mongoose.Schema({
     batch: { type: String },
     productionDate: { type: Date },
     expiryDate: { type: Date },
+    hsCode: { type: String },
+    grossWeight: { type: String },
+    netWeight: { type: String },
     remarks: { type: String },
     documentUrl: { type: String },
     documentName: { type: String }
