@@ -583,21 +583,42 @@ exports.createShipment = async (req, res) => {
         .toUpperCase()
         .trim();
 
-      const poMatch = cleaned.match(/PO[\s\-_/]*([A-Z0-9]+)/);
-      if (poMatch?.[1]) {
-        return `PO${poMatch[1]}`;
+      const digitGroups = cleaned.match(/\d+/g) || [];
+      if (digitGroups.length >= 2) {
+        const poSeries = String(digitGroups[0] || '').slice(-2).padStart(2, '0');
+        const poTail = String(digitGroups[digitGroups.length - 1] || '').slice(-4).padStart(4, '0');
+        return `PO${poSeries}-${poTail}`;
       }
 
-      const parts = cleaned.split(/[^A-Z0-9]+/).filter(Boolean);
-      const tail = parts[parts.length - 1];
-      return tail ? `PO${tail}` : 'PO00';
+      const compact = cleaned.replace(/[^A-Z0-9]/g, '');
+      const poMatch = compact.match(/PO?0*(\d+)(\d{4})$/i);
+      if (poMatch) {
+        const prefixDigits = String(poMatch[1] || '').slice(-2).padStart(2, '0');
+        const tailDigits = String(poMatch[2]).slice(-4).padStart(4, '0');
+        return `PO${prefixDigits}-${tailDigits}`;
+      }
+
+      const digits = compact.replace(/\D/g, '');
+      if (digits.length >= 4) {
+        const poSeries = digits.slice(0, Math.max(0, digits.length - 4)).slice(-2).padStart(2, '0');
+        const poTail = digits.slice(-4).padStart(4, '0');
+        return `PO${poSeries}-${poTail}`;
+      }
+
+      return 'PO00-0000';
     };
 
+    const trackerSourceValue =
+      [fpoNo, poNumber]
+        .map((value) => String(value || '').trim())
+        .find((value) => value && !/^RHST\d{5,}$/i.test(value.replace(/[^A-Z0-9]/g, ''))) ||
+      String(fpoNo || poNumber || '').trim();
+
     let shipmentRunningNo = (await Shipment.countDocuments()) + 1;
-    let trackerSerial = `RHST-${String(shipmentRunningNo).padStart(4, '0')}/${extractPurchaseSuffix(fpoNo || poNumber)}`;
+    let trackerSerial = `RHST-${String(shipmentRunningNo).padStart(4, '0')}/${extractPurchaseSuffix(trackerSourceValue)}`;
     while (await Shipment.exists({ shipmentNo: trackerSerial })) {
       shipmentRunningNo += 1;
-      trackerSerial = `RHST-${String(shipmentRunningNo).padStart(4, '0')}/${extractPurchaseSuffix(fpoNo || poNumber)}`;
+      trackerSerial = `RHST-${String(shipmentRunningNo).padStart(4, '0')}/${extractPurchaseSuffix(trackerSourceValue)}`;
     }
 
     // Auto generate shipment number from running tracker sequence + source PO suffix
