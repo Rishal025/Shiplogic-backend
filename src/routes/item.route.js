@@ -35,4 +35,18 @@ router.get(
   itemController.getItemById
 );
 
+router.put(
+  '/:id',
+  authMiddleware,
+  authorize(['Purchase','FAS','Admin']),
+  itemController.updateItem
+);
+
+router.delete(
+  '/:id',
+  authMiddleware,
+  authorize(['Purchase','FAS','Admin']),
+  itemController.deleteItem
+);
+
 module.exports = router;

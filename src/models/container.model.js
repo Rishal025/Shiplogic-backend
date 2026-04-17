@@ -134,6 +134,7 @@ const actualContainerSchema = new mongoose.Schema({
   }],
   packagingList: {
     brand: { type: String },
+    productionDate: { type: String },
     expiryDate: { type: String },
     packingDescription: { type: String },
     totalBags: { type: Number },

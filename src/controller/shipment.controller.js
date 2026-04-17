@@ -536,6 +536,26 @@ exports.createShipment = async (req, res) => {
         missingFields
       });
     }
+
+    // Prevent duplicate tracker creation for the same PO (and year if available).
+    // Users sometimes click "Save" again; this should not create a new tracker.
+    const resolvedYear =
+      year != null && String(year).trim() !== ''
+        ? Number(year)
+        : (orderDate ? new Date(orderDate).getFullYear() : undefined);
+    const existingShipmentQuery = { poNumber: String(poNumber || '').trim() };
+    if (resolvedYear && !Number.isNaN(resolvedYear)) {
+      existingShipmentQuery.year = resolvedYear;
+    }
+    const existingShipment = await Shipment.findOne(existingShipmentQuery).select('_id shipmentNo');
+    if (existingShipment) {
+      return res.status(409).json({
+        message: 'Tracker already exists for this PO. Please open and update the existing tracker instead of creating a new one.',
+        shipmentId: existingShipment._id,
+        shipmentNo: existingShipment.shipmentNo,
+      });
+    }
+
     if (!lpoDocument || !s1QualityReport) {
       return res.status(400).json({
         message: 'Required documents missing: lpoDocument and s1QualityReport are mandatory'
@@ -614,11 +634,27 @@ exports.createShipment = async (req, res) => {
         .find((value) => value && !/^RHST\d{5,}$/i.test(value.replace(/[^A-Z0-9]/g, ''))) ||
       String(fpoNo || poNumber || '').trim();
 
+    // Extract the PO suffix
+    const purchaseSuffix = extractPurchaseSuffix(trackerSourceValue);
+    
+    // Check if this PO suffix already exists in any shipment (prevent duplicate PO suffixes)
+    if (purchaseSuffix && purchaseSuffix !== 'PO00-0000') {
+      const suffixRegex = new RegExp(`/${purchaseSuffix}$`);
+      const existingSuffixShipment = await Shipment.findOne({ shipmentNo: suffixRegex }).select('_id shipmentNo');
+      if (existingSuffixShipment) {
+        return res.status(409).json({
+          message: `A shipment with PO suffix "${purchaseSuffix}" already exists (${existingSuffixShipment.shipmentNo}). Each PO must be unique.`,
+          shipmentId: existingSuffixShipment._id,
+          shipmentNo: existingSuffixShipment.shipmentNo,
+        });
+      }
+    }
+
     let shipmentRunningNo = (await Shipment.countDocuments()) + 1;
-    let trackerSerial = `RHST-${String(shipmentRunningNo).padStart(4, '0')}/${extractPurchaseSuffix(trackerSourceValue)}`;
+    let trackerSerial = `RHST-${String(shipmentRunningNo).padStart(4, '0')}/${purchaseSuffix}`;
     while (await Shipment.exists({ shipmentNo: trackerSerial })) {
       shipmentRunningNo += 1;
-      trackerSerial = `RHST-${String(shipmentRunningNo).padStart(4, '0')}/${extractPurchaseSuffix(trackerSourceValue)}`;
+      trackerSerial = `RHST-${String(shipmentRunningNo).padStart(4, '0')}/${purchaseSuffix}`;
     }
 
     // Auto generate shipment number from running tracker sequence + source PO suffix
@@ -939,6 +975,7 @@ exports.addActualContainer = async (req, res) => {
         const raw = JSON.parse(packagingList);
         return {
           brand: raw.brand || '',
+          productionDate: raw.production_date || raw.productionDate || '',
           expiryDate: raw.expiry_date || raw.expiryDate || '',
           packingDescription: raw.packing_description || raw.packingDescription || '',
           totalBags: Number(raw.total_bags ?? raw.totalBags) || 0,
@@ -1060,7 +1097,16 @@ exports.updateBLDetails = async (req, res) => {
     const parsedPackagingList = parseJsonField(packagingList);
 
     if (parsedPackagingList) {
-      container.actual.packagingList = parsedPackagingList;
+      container.actual.packagingList = {
+        ...parsedPackagingList,
+        // Normalize snake_case keys from Python extraction to camelCase
+        productionDate: parsedPackagingList.productionDate || parsedPackagingList.production_date || '',
+        expiryDate: parsedPackagingList.expiryDate || parsedPackagingList.expiry_date || '',
+        packingDescription: parsedPackagingList.packingDescription || parsedPackagingList.packing_description || '',
+        totalBags: parsedPackagingList.totalBags ?? parsedPackagingList.total_bags ?? 0,
+        totalGrossWeight: parsedPackagingList.totalGrossWeight || parsedPackagingList.total_gross_weight || '',
+        totalNetWeight: parsedPackagingList.totalNetWeight || parsedPackagingList.total_net_weight || '',
+      };
     }
 
     if (blNo !== undefined) {
