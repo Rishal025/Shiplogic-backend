@@ -142,3 +142,83 @@ The frontend will match the item dropdown by **itemCode** (or fallback to **item
 - Numeric values: send as numbers (not strings) for `fcPerUnit`, `totalUSD`, `totalAED`, `advanceAmount`, `plannedContainers`, `fcl`, `pallet`, `bags`, `noOfShipments`.
 - Dropdown values (`incoTerms`, `commodity`, `containerSize`, `buyingUnit`, `paymentTerms`) should match the exact option values used in the frontend (see table values above).
 - When integrated, the Node API will send the uploaded file buffers to the Python service and expect this JSON shape in return.
+
+
+---
+
+## 7. S1 Quality Report (`s1_quality_report` key in Python response)
+
+The Python service should extract the following from the S1 quality report PDF and return it under the `s1_quality_report` key. This is stored as `q1Report` in the shipment record.
+
+```json
+{
+  "report_details": {
+    "report_no": "QR-2024-001",
+    "report_date": "15/03/2024"
+  },
+  "sample_details": {
+    "commodity": "RICE",
+    "brand": null,
+    "variety_of_grains": "PR-11 100%",
+    "shipment_no_batch_no": "Sample 8 PR-11 Steam",
+    "vendor": "LRNK",
+    "country_of_origin": "INDIA",
+    "other_references": "Sample 8",
+    "purpose": "For Mutashar/ RC paking"
+  },
+  "analysis_details": {
+    "analyzed_by": "Lab Analyst Name",
+    "date": "15/03/2024",
+    "time": "10:30"
+  },
+  "quality_parameters": [
+    {
+      "s_no": 1,
+      "criteria": "Moisture",
+      "preferred_standard": "12.00%",
+      "actual": "11.5%",
+      "remark": null,
+      "silat_parameters": null
+    },
+    {
+      "s_no": 2,
+      "criteria": "Broken",
+      "preferred_standard": "5.00%",
+      "actual": "4.2%",
+      "remark": null,
+      "silat_parameters": null
+    }
+  ],
+  "cooking_result": {
+    "result_options": "Excellent / Good / Normal / Bad",
+    "selected_result": "NORMAL"
+  },
+  "remarks": "Sample meets all quality standards. Approved for shipment."
+}
+```
+
+### Key fields for Python team to extract:
+
+| Field | Path | Description |
+|-------|------|-------------|
+| Report No | `report_details.report_no` | Quality report reference number |
+| Report Date | `report_details.report_date` | Date of the report |
+| Commodity | `sample_details.commodity` | e.g. RICE, WHEAT |
+| Variety | `sample_details.variety_of_grains` | Grain variety |
+| Batch No | `sample_details.shipment_no_batch_no` | Shipment/batch reference |
+| Vendor | `sample_details.vendor` | Supplier/vendor name |
+| Country | `sample_details.country_of_origin` | Country of origin |
+| Purpose | `sample_details.purpose` | Purpose of the quality check |
+| Analyzed By | `analysis_details.analyzed_by` | Name of analyst |
+| Analysis Date | `analysis_details.date` | Date of analysis |
+| Analysis Time | `analysis_details.time` | Time of analysis (HH:MM) |
+| Quality Parameters | `quality_parameters[]` | Array of parameter rows (see structure above) |
+| Cooking Result | `cooking_result.selected_result` | One of: Excellent / Good / Normal / Bad |
+| Cooking Options | `cooking_result.result_options` | Full options string from the report |
+| **Remarks** | `remarks` | **Overall remarks/conclusion from the S1 report — extract this from the remarks/conclusion section of the PDF** |
+
+### Important notes for Python team:
+- `remarks` must be extracted from the **Remarks** or **Conclusion** section of the S1 quality report PDF
+- `cooking_result` must be an **object** with both `result_options` (the full options string) and `selected_result` (the chosen/circled value)
+- `quality_parameters` must be an **array of objects** — not a flat string
+- All fields are optional; return only what can be confidently extracted

@@ -11,6 +11,8 @@ const shipmentRoutes = require('./routes/shipment.route');
 const notificationRoutes = require('./routes/notification.route');
 const accessControlRoutes = require('./routes/accessControl.route');
 const warehouseRoutes = require('./routes/warehouse.route');
+const transportationCompanyRoutes = require('./routes/transportationCompany.route');
+const exchangeRateRoutes = require('./routes/exchangeRate.route');
 // const logisticsRoutes = require('./modules/logistics/logistics.routes');
 
 const app = express();
@@ -46,6 +48,8 @@ app.use('/api/v1/shipment', shipmentRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 app.use('/api/v1/access-control', accessControlRoutes);
 app.use('/api/v1/warehouse', warehouseRoutes);
+app.use('/api/v1/transportation-companies', transportationCompanyRoutes);
+app.use('/api/v1/exchange-rates', exchangeRateRoutes);
 
 app.get('/', (req, res) => res.send('Shipment Tracker Backend Running'));
 
