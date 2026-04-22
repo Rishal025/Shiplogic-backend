@@ -3429,3 +3429,43 @@ exports.extractArrivalNotice = async (req, res) => {
     });
   }
 };
+
+// Update supplier email on a shipment
+exports.updateSupplierEmail = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { supplierEmail } = req.body;
+
+    if (!supplierEmail || typeof supplierEmail !== 'string') {
+      return res.status(400).json({ message: 'supplierEmail is required' });
+    }
+
+    const normalized = supplierEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+      return res.status(400).json({ message: 'A valid email address is required' });
+    }
+
+    const shipment = await Shipment.findById(id);
+    if (!shipment) return res.status(404).json({ message: 'Shipment not found' });
+
+    const before = { supplierEmail: shipment.supplierEmail };
+    shipment.supplierEmail = normalized;
+    await shipment.save();
+
+    await logAudit({
+      userId: req.user._id,
+      module: 'Shipment',
+      entity: 'Shipment',
+      entityId: shipment._id,
+      action: 'Updated',
+      before,
+      after: { supplierEmail: normalized },
+      remarks: 'Vendor email updated',
+    });
+
+    res.json({ message: 'Vendor email updated', supplierEmail: normalized });
+  } catch (err) {
+    console.error('updateSupplierEmail error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};

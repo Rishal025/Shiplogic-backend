@@ -279,7 +279,12 @@ router.get(
   controller.getShipmentById
 );
 
-
-
+// Update vendor email on a shipment
+router.patch(
+  '/:id/supplier-email',
+  authMiddleware,
+  authorize(['Purchase','Admin']),
+  controller.updateSupplierEmail
+);
 
 module.exports = router;
