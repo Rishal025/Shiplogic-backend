@@ -4,10 +4,12 @@ const Container = require('../models/container.model');
 const Supplier = require('../models/supplier.model');
 const SupplierAccount = require('../models/supplierAccount.model');
 const Item = require('../models/item.model');
+const User = require('../models/auth.model');
 const logAudit = require('../models/auditLog.model');
 const { uploadBufferToS3, createSignedGetUrl } = require('../core/utils/s3Upload');
 const { calculateSupplierOnboardingState } = require('../core/utils/supplierOnboarding');
-const { sendSupplierInviteEmail } = require('../services/mail.service');
+const { sendSupplierInviteEmail, sendWorkflowUpdateEmail } = require('../services/mail.service');
+const { normalizeRole } = require('../core/utils/roleHelpers');
 const mongoose = require('mongoose');
 const XLSX = require('xlsx');
 const PDFDocument = require('pdfkit');
@@ -113,6 +115,68 @@ const formatDateTimeValue = (value) => {
     minute: '2-digit',
     second: '2-digit',
   });
+};
+
+const WORKFLOW_NOTIFICATION_ROLE_MAP = {
+  blDetails: 'FAS',
+  documentation: 'Logistic',
+  logistics: 'Logistic',
+  storage: 'Purchase',
+  quality: 'FAS',
+  paymentCosting: 'Purchase',
+};
+
+const notifyWorkflowRoleByEmail = async ({
+  role,
+  shipment,
+  container,
+  sectionLabel,
+  actor,
+}) => {
+  const normalizedRole = normalizeRole(role);
+  if (!normalizedRole) return;
+
+  try {
+    const recipients = await User.find({
+      role: normalizedRole,
+      isActive: true,
+      email: { $exists: true, $ne: null },
+    })
+      .select('name email')
+      .lean();
+
+    if (!recipients.length) return;
+
+    const actorName = actor?.name || actor?.email || 'A user';
+    const shipmentNo = shipment?.shipmentNo || 'N/A';
+    const containerSerialNo =
+      container?.actual?.containerSerialNo ||
+      container?.planned?.containerSerialNo ||
+      container?.containerSerialNo ||
+      container?._id?.toString?.() ||
+      'N/A';
+
+    const uniqueRecipients = recipients.filter((recipient, index, list) => {
+      const email = String(recipient.email || '').trim().toLowerCase();
+      return email && list.findIndex((entry) => String(entry.email || '').trim().toLowerCase() === email) === index;
+    });
+
+    await Promise.all(
+      uniqueRecipients.map((recipient) =>
+        sendWorkflowUpdateEmail({
+          to: recipient.email,
+          userName: recipient.name,
+          shipmentNo,
+          containerSerialNo,
+          sectionLabel,
+          updatedBy: actorName,
+          nextRole: normalizedRole,
+        })
+      )
+    );
+  } catch (error) {
+    console.error(`Workflow email warning for ${sectionLabel}:`, error.message);
+  }
 };
 
 const SHIPMENT_REPORT_COLUMNS = [
@@ -1135,7 +1199,8 @@ exports.updateBLDetails = async (req, res) => {
         sn: Number(row.sn) || 0,
         description: row.description || '',
         requestAmount: Number(row.requestAmount ?? 0),
-        paidAmount: Number(row.paidAmount ?? 0)
+        // POINT 5: paidAmount removed, replaced with remarks
+        remarks: row.remarks ?? ''
       }));
     }
     if (Array.isArray(parsedStorageAllocations)) {
@@ -1161,6 +1226,13 @@ exports.updateBLDetails = async (req, res) => {
     if (shipmentForBL) {
       advanceShipmentStage(shipmentForBL, 'B/L Details');
       await shipmentForBL.save();
+      await notifyWorkflowRoleByEmail({
+        role: WORKFLOW_NOTIFICATION_ROLE_MAP.blDetails,
+        shipment: shipmentForBL,
+        container,
+        sectionLabel: 'B/L Details',
+        actor: req.user,
+      });
     }
 
     res.status(200).json({
@@ -1250,6 +1322,13 @@ exports.updateFASContainer = async (req, res) => {
     if (shipmentForDoc) {
       advanceShipmentStage(shipmentForDoc, 'Documentation');
       await shipmentForDoc.save();
+      await notifyWorkflowRoleByEmail({
+        role: WORKFLOW_NOTIFICATION_ROLE_MAP.documentation,
+        shipment: shipmentForDoc,
+        container,
+        sectionLabel: 'Document Tracker',
+        actor: req.user,
+      });
     }
 
     await logAudit({
@@ -1471,6 +1550,13 @@ exports.updateLogisticsDetails = async (req, res) => {
       console.log('📈 [Logistics] Advancing shipment stage to "Port & Customs"');
       advanceShipmentStage(shipmentForLogistics, 'Port & Customs');
       await shipmentForLogistics.save();
+      await notifyWorkflowRoleByEmail({
+        role: WORKFLOW_NOTIFICATION_ROLE_MAP.logistics,
+        shipment: shipmentForLogistics,
+        container,
+        sectionLabel: sectionKey ? `Port & Customs - ${sectionKey}` : 'Port & Customs',
+        actor: req.user,
+      });
     }
 
     const shipment = await Shipment.findById(container.shipmentId);
@@ -1709,6 +1795,13 @@ exports.updateStorageDetails = async (req, res) => {
     if (shipmentForStorage) {
       advanceShipmentStage(shipmentForStorage, 'Storage');
       await shipmentForStorage.save();
+      await notifyWorkflowRoleByEmail({
+        role: WORKFLOW_NOTIFICATION_ROLE_MAP.storage,
+        shipment: shipmentForStorage,
+        container,
+        sectionLabel: 'Storage Allocation',
+        actor: req.user,
+      });
     }
 
     res.status(200).json({ message: 'Storage details updated successfully', container });
@@ -1775,6 +1868,16 @@ exports.updateStorageArrivalRow = async (req, res) => {
     }
 
     await container.save();
+    const shipmentForStorageArrival = await Shipment.findById(container.shipmentId);
+    if (shipmentForStorageArrival) {
+      await notifyWorkflowRoleByEmail({
+        role: WORKFLOW_NOTIFICATION_ROLE_MAP.storage,
+        shipment: shipmentForStorageArrival,
+        container,
+        sectionLabel: `Storage Arrival Row ${rowIndex + 1}`,
+        actor: req.user,
+      });
+    }
     res.json({ message: 'Storage arrival row updated successfully', container });
   } catch (err) {
     console.error(err);
@@ -1857,6 +1960,13 @@ exports.updateQualityDetails = async (req, res) => {
     if (shipmentForQuality) {
       advanceShipmentStage(shipmentForQuality, 'Quality');
       await shipmentForQuality.save();
+      await notifyWorkflowRoleByEmail({
+        role: WORKFLOW_NOTIFICATION_ROLE_MAP.quality,
+        shipment: shipmentForQuality,
+        container,
+        sectionLabel: 'Quality',
+        actor: req.user,
+      });
     }
 
     res.status(200).json({ message: 'Quality details updated successfully', container });
@@ -1905,7 +2015,7 @@ exports.updatePaymentCostingDetails = async (req, res) => {
           description: row.description || '',
           requestAmount: Number(row.requestAmount) || 0,
           paidAmount: Number(row.paidAmount) || 0,
-          actualPaid: Number(row.actualPaid) || 0,
+          // POINT 7: actualPaid removed — difference is paidAmount - requestAmount
           refBillNo: row.refBillNo || '',
           refBillDate: toDateOrNull(row.refBillDate),
           refBillVendor: row.refBillVendor || '',
@@ -1948,6 +2058,13 @@ exports.updatePaymentCostingDetails = async (req, res) => {
     if (shipmentForPayment) {
       advanceShipmentStage(shipmentForPayment, 'Payment Costing');
       await shipmentForPayment.save();
+      await notifyWorkflowRoleByEmail({
+        role: WORKFLOW_NOTIFICATION_ROLE_MAP.paymentCosting,
+        shipment: shipmentForPayment,
+        container,
+        sectionLabel: 'Payment Costing',
+        actor: req.user,
+      });
     }
 
     res.status(200).json({ message: 'Payment costing updated successfully', container });
@@ -3414,6 +3531,7 @@ exports.extractArrivalNotice = async (req, res) => {
     const freeRetentionDays = Number.parseInt(String(rawDays).match(/\d+/)?.[0] || '0', 10) || 0;
 
     return res.status(200).json({
+      print_date: pythonRes?.print_date || null,
       arrival_on: pythonRes?.arrival_on || null,
       free_retension_days: freeRetentionDays,
       metadata: pythonRes?.metadata || null,

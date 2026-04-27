@@ -400,3 +400,342 @@ exports.createUser = async (req, res) => {
     res.status(500).json({ message: 'Unable to create user', error: error.message });
   }
 };
+/**
+ * Enhanced Permission Management Functions
+ * 
+ * Additional endpoints to support the new permission-based authorization system
+ */
+
+const { permissionService } = require('../core/services/permissionService');
+const { permissionCache } = require('../core/cache/permissionCache');
+const { 
+  getAllSystemPermissions, 
+  generatePermissionSeedData,
+  generateRolePermissionSeedData,
+  mapRolesToPermissions,
+  validateSystemPermissions
+} = require('../core/utils/routePermissionMapper');
+
+/**
+ * Get effective permissions for current user (enhanced version)
+ * Includes both legacy and new permission format
+ */
+exports.getEffectivePermissionsEnhanced = async (req, res) => {
+  try {
+    const user = req.user;
+    
+    // Get legacy permissions (existing functionality)
+    const legacyPermissionKeys = await getAssignedPermissionKeys(user.role);
+    const legacyPermissions = await Permission.find({ 
+      key: { $in: legacyPermissionKeys }, 
+      isActive: true 
+    }).sort({ sortOrder: 1, label: 1 });
+
+    // Get new-style permissions through permission service
+    const newPermissions = await permissionService.getUserPermissions(user);
+    
+    // Get role-based permissions mapping
+    const roleMappedPermissions = mapRolesToPermissions([user.role]);
+    
+    res.json({
+      user: {
+        id: user._id,
+        role: user.role,
+        normalizedRole: normalizeRole(user.role)
+      },
+      legacy: {
+        permissionKeys: legacyPermissionKeys,
+        permissionGroups: buildPermissionGroups(legacyPermissions, new Set(legacyPermissionKeys))
+      },
+      enhanced: {
+        directPermissions: newPermissions,
+        roleMappedPermissions: roleMappedPermissions,
+        allEffectivePermissions: [...new Set([...newPermissions, ...roleMappedPermissions])]
+      },
+      capabilities: {
+        canReadShipments: await permissionService.hasPermission(user, 'shipments:read'),
+        canWriteShipments: await permissionService.hasPermission(user, 'shipments:write'),
+        canReadPurchase: await permissionService.hasPermission(user, 'purchase:read'),
+        canWritePurchase: await permissionService.hasPermission(user, 'purchase:write'),
+        canAccessAdmin: await permissionService.hasPermission(user, 'admin:access_control'),
+        isManager: await permissionService.checkManagerAccess(user, 'shipments:read')
+      }
+    });
+  } catch (error) {
+    console.error('Enhanced effective permissions error:', error);
+    res.status(500).json({ 
+      message: 'Unable to load effective permissions', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Refresh permission cache for a user
+ */
+exports.refreshUserPermissions = async (req, res) => {
+  try {
+    const userId = req.params.userId || req.user._id;
+    
+    await permissionService.refreshUserPermissions(userId);
+    
+    await logAudit({
+      userId: req.user._id,
+      module: 'Access Control',
+      entity: 'PermissionCache',
+      entityId: userId,
+      action: 'Refreshed',
+      before: {},
+      after: { userId, refreshedAt: new Date() },
+      remarks: `Refreshed permission cache for user ${userId}`,
+    });
+    
+    res.json({ 
+      message: 'User permissions cache refreshed',
+      userId,
+      refreshedAt: new Date()
+    });
+  } catch (error) {
+    console.error('Refresh user permissions error:', error);
+    res.status(500).json({ 
+      message: 'Unable to refresh user permissions', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Refresh permission cache for a role
+ */
+exports.refreshRolePermissions = async (req, res) => {
+  try {
+    const roleKey = req.params.roleKey;
+    
+    if (!roleKey) {
+      return res.status(400).json({ message: 'Role key is required' });
+    }
+    
+    await permissionService.refreshRolePermissions(roleKey);
+    
+    await logAudit({
+      userId: req.user._id,
+      module: 'Access Control',
+      entity: 'PermissionCache',
+      entityId: roleKey,
+      action: 'Refreshed',
+      before: {},
+      after: { roleKey, refreshedAt: new Date() },
+      remarks: `Refreshed permission cache for role ${roleKey}`,
+    });
+    
+    res.json({ 
+      message: 'Role permissions cache refreshed',
+      roleKey,
+      refreshedAt: new Date()
+    });
+  } catch (error) {
+    console.error('Refresh role permissions error:', error);
+    res.status(500).json({ 
+      message: 'Unable to refresh role permissions', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Clear all permission caches
+ */
+exports.clearAllPermissionCaches = async (req, res) => {
+  try {
+    await permissionService.clearCache();
+    
+    await logAudit({
+      userId: req.user._id,
+      module: 'Access Control',
+      entity: 'PermissionCache',
+      entityId: 'all',
+      action: 'Cleared',
+      before: {},
+      after: { clearedAt: new Date() },
+      remarks: 'Cleared all permission caches',
+    });
+    
+    res.json({ 
+      message: 'All permission caches cleared',
+      clearedAt: new Date()
+    });
+  } catch (error) {
+    console.error('Clear all caches error:', error);
+    res.status(500).json({ 
+      message: 'Unable to clear permission caches', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Get permission cache metrics
+ */
+exports.getPermissionCacheMetrics = async (req, res) => {
+  try {
+    const metrics = permissionCache.getMetrics();
+    
+    res.json({
+      message: 'Permission cache metrics',
+      metrics,
+      timestamp: new Date()
+    });
+  } catch (error) {
+    console.error('Get cache metrics error:', error);
+    res.status(500).json({ 
+      message: 'Unable to get cache metrics', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Get all system permissions (new format)
+ */
+exports.getSystemPermissions = async (req, res) => {
+  try {
+    const allPermissions = getAllSystemPermissions();
+    const validation = validateSystemPermissions();
+    
+    res.json({
+      message: 'System permissions',
+      permissions: allPermissions,
+      validation,
+      totalCount: allPermissions.length
+    });
+  } catch (error) {
+    console.error('Get system permissions error:', error);
+    res.status(500).json({ 
+      message: 'Unable to get system permissions', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Test user permission
+ */
+exports.testUserPermission = async (req, res) => {
+  try {
+    const { permission } = req.body;
+    const user = req.user;
+    
+    if (!permission) {
+      return res.status(400).json({ message: 'Permission is required' });
+    }
+    
+    const hasPermission = await permissionService.hasPermission(user, permission);
+    const userPermissions = await permissionService.getUserPermissions(user);
+    
+    res.json({
+      message: 'Permission test result',
+      user: {
+        id: user._id,
+        role: user.role
+      },
+      testedPermission: permission,
+      hasPermission,
+      userPermissions,
+      timestamp: new Date()
+    });
+  } catch (error) {
+    console.error('Test user permission error:', error);
+    res.status(500).json({ 
+      message: 'Unable to test permission', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Seed new permission system data
+ */
+exports.seedPermissionSystem = async (req, res) => {
+  try {
+    const permissionSeedData = generatePermissionSeedData();
+    const rolePermissionSeedData = generateRolePermissionSeedData();
+    
+    // Insert permissions (skip duplicates)
+    let permissionsCreated = 0;
+    for (const permData of permissionSeedData) {
+      const existing = await Permission.findOne({ key: permData.key });
+      if (!existing) {
+        await Permission.create(permData);
+        permissionsCreated++;
+      }
+    }
+    
+    // Insert role permissions (skip duplicates)
+    let rolePermissionsCreated = 0;
+    for (const rolePermData of rolePermissionSeedData) {
+      const existing = await RolePermission.findOne({ 
+        roleKey: rolePermData.roleKey, 
+        permissionKey: rolePermData.permissionKey 
+      });
+      if (!existing) {
+        await RolePermission.create(rolePermData);
+        rolePermissionsCreated++;
+      }
+    }
+    
+    // Clear cache after seeding
+    await permissionService.clearCache();
+    
+    await logAudit({
+      userId: req.user._id,
+      module: 'Access Control',
+      entity: 'PermissionSystem',
+      entityId: 'seed',
+      action: 'Seeded',
+      before: {},
+      after: { 
+        permissionsCreated, 
+        rolePermissionsCreated,
+        seededAt: new Date() 
+      },
+      remarks: 'Seeded new permission system data',
+    });
+    
+    res.json({
+      message: 'Permission system seeded successfully',
+      permissionsCreated,
+      rolePermissionsCreated,
+      totalPermissions: permissionSeedData.length,
+      totalRolePermissions: rolePermissionSeedData.length,
+      seededAt: new Date()
+    });
+  } catch (error) {
+    console.error('Seed permission system error:', error);
+    res.status(500).json({ 
+      message: 'Unable to seed permission system', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Enhanced updateRolePermissions with cache refresh
+ */
+const originalUpdateRolePermissions = exports.updateRolePermissions;
+exports.updateRolePermissions = async (req, res) => {
+  try {
+    // Call original function
+    await originalUpdateRolePermissions(req, res);
+    
+    // If successful, refresh the role cache
+    if (res.statusCode === 200) {
+      const role = await Role.findById(req.params.id);
+      if (role) {
+        await permissionService.refreshRolePermissions(role.key);
+      }
+    }
+  } catch (error) {
+    // Error already handled by original function
+    throw error;
+  }
+};

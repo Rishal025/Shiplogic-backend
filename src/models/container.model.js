@@ -161,7 +161,8 @@ const actualContainerSchema = new mongoose.Schema({
     sn: { type: Number },
     description: { type: String },
     requestAmount: { type: Number },
-    paidAmount: { type: Number }
+    // POINT 5: paidAmount removed, replaced with remarks
+    remarks: { type: String, default: '' }
   }],
   storageAllocations: [{
     sn: { type: Number },
@@ -243,7 +244,7 @@ const actualContainerSchema = new mongoose.Schema({
     description: { type: String },
     requestAmount: { type: Number },
     paidAmount: { type: Number },
-    actualPaid: { type: Number },
+    // POINT 7: actualPaid removed — difference is now paidAmount - requestAmount
     refBillNo: { type: String },
     refBillDate: { type: Date },
     refBillVendor: { type: String },

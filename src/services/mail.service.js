@@ -101,7 +101,56 @@ async function sendInternalUserInviteEmail({ to, userName, role, temporaryPasswo
   });
 }
 
+async function sendWorkflowUpdateEmail({
+  to,
+  userName,
+  shipmentNo,
+  containerSerialNo,
+  sectionLabel,
+  updatedBy,
+  nextRole,
+}) {
+  const transporter = getTransporter();
+  const { from } = getMailerConfig();
+  const portalUrl = process.env.INTERNAL_PORTAL_URL || 'http://localhost:4200/auth/login';
+  const safeUserName = userName || 'Team member';
+  const safeShipmentNo = shipmentNo || 'N/A';
+  const safeContainerSerialNo = containerSerialNo || 'N/A';
+  const safeSectionLabel = sectionLabel || 'Shipment section';
+  const safeUpdatedBy = updatedBy || 'A user';
+  const safeNextRole = nextRole || 'Assigned team';
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: `Royal Horizon Shipment Update: ${safeSectionLabel}`,
+    text: [
+      `Hello ${safeUserName},`,
+      '',
+      `${safeUpdatedBy} saved the ${safeSectionLabel} section in the shipment workflow.`,
+      `Shipment No: ${safeShipmentNo}`,
+      `Container Serial No: ${safeContainerSerialNo}`,
+      `Responsible Team: ${safeNextRole}`,
+      '',
+      `You can review the latest update here: ${portalUrl}`,
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+        <p>Hello ${safeUserName},</p>
+        <p><strong>${safeUpdatedBy}</strong> saved the <strong>${safeSectionLabel}</strong> section in the shipment workflow.</p>
+        <p>
+          <strong>Shipment No:</strong> ${safeShipmentNo}<br/>
+          <strong>Container Serial No:</strong> ${safeContainerSerialNo}<br/>
+          <strong>Responsible Team:</strong> ${safeNextRole}
+        </p>
+        <p>You can review the latest update here: <a href="${portalUrl}">${portalUrl}</a></p>
+      </div>
+    `,
+  });
+}
+
 module.exports = {
   sendSupplierInviteEmail,
   sendInternalUserInviteEmail,
+  sendWorkflowUpdateEmail,
 };

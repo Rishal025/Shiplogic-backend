@@ -52,6 +52,9 @@ const SHIPMENT_PERMISSION_TEMPLATES = [
   { key: 'shipment.tab.document_tracker.view',    resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'tab',    label: 'View Document Tracker', sortOrder: 140 },
   { key: 'shipment.tab.document_tracker.edit',    resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'edit',             label: 'Edit Document Tracker',      sortOrder: 141 },
   { key: 'shipment.tab.document_tracker.preview', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'preview_document', label: 'Preview Shipment Documents', sortOrder: 142 },
+  // POINT 9: Milestone-level permissions — Purchase (M1, M2) and FAS (M3–M6)
+  { key: 'shipment.milestone.purchase.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_purchase_edit', label: 'Edit Purchase Milestones (M1, M2)', sortOrder: 143 },
+  { key: 'shipment.milestone.fas.edit',      resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_fas_edit',      label: 'Edit FAS Milestones (M3–M6)',      sortOrder: 144 },
 
   // ─── Port & Customs Tab ───────────────────────────────────────────────────
   { key: 'shipment.tab.port_customs.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'tab',    label: 'View Port & Customs', sortOrder: 150 },
