@@ -6,7 +6,7 @@ const authorize = require('../core/utils/authorize');
 const router = express.Router();
 
 router.use(authMiddleware);
-router.use(authorize(['Admin', 'Purchase', 'FAS', 'Logistics']));
+router.use(authorize({ tag: 'any-active' }));
 
 router.get('/', supplierScheduleController.listSchedules);
 router.get('/:id', supplierScheduleController.getScheduleById);

@@ -31,7 +31,6 @@ const SHIPMENT_PERMISSION_TEMPLATES = [
   // ─── Shipment Entry Tab ───────────────────────────────────────────────────
   { key: 'shipment.tab.shipment_entry.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'shipment_entry', type: 'tab',    label: 'View Shipment Entry', sortOrder: 100 },
   // Fields
-  { key: 'shipment.field.shipment_entry.piNo.edit',         resource: 'shipment', screen: 'shipment_tracker', tab: 'shipment_entry', field: 'piNo',          type: 'field', action: 'edit', label: 'Edit PI No.',        sortOrder: 101 },
   { key: 'shipment.field.shipment_entry.supplierEmail.edit', resource: 'shipment', screen: 'create_shipment',  tab: 'shipment_entry', field: 'supplierEmail', type: 'field', action: 'edit', label: 'Edit Supplier Email', sortOrder: 102 },
 
   // ─── Shipment Tracker Split Tab ───────────────────────────────────────────
@@ -59,6 +58,20 @@ const SHIPMENT_PERMISSION_TEMPLATES = [
   // ─── Port & Customs Tab ───────────────────────────────────────────────────
   { key: 'shipment.tab.port_customs.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'tab',    label: 'View Port & Customs', sortOrder: 150 },
   { key: 'shipment.tab.port_customs.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'edit', label: 'Edit Port & Customs', sortOrder: 151 },
+  { key: 'shipment.tab.port_customs.milestone_1.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_1_view', label: 'View Milestone 1', description: 'Port & Customs Clearance milestone with arrival notice and retention dates.', sortOrder: 152 },
+  { key: 'shipment.tab.port_customs.milestone_1.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_1_edit', label: 'Edit Milestone 1', description: 'Edit Port & Customs Clearance milestone with arrival notice and retention dates.', sortOrder: 153 },
+  { key: 'shipment.tab.port_customs.milestone_2.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_2_view', label: 'View Milestone 2', description: 'Advance Received milestone with date and attached document access.', sortOrder: 154 },
+  { key: 'shipment.tab.port_customs.milestone_2.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_2_edit', label: 'Edit Milestone 2', description: 'Edit Advance Received milestone with date and attached document actions.', sortOrder: 155 },
+  { key: 'shipment.tab.port_customs.milestone_3.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_3_view', label: 'View Milestone 3', description: 'DO Released Date milestone with remarks and document access.', sortOrder: 156 },
+  { key: 'shipment.tab.port_customs.milestone_3.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_3_edit', label: 'Edit Milestone 3', description: 'Edit DO Released Date milestone with remarks and document actions.', sortOrder: 157 },
+  { key: 'shipment.tab.port_customs.milestone_4.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_4_view', label: 'View Milestone 4', description: 'DP Clearance Date milestone with remarks and document access.', sortOrder: 158 },
+  { key: 'shipment.tab.port_customs.milestone_4.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_4_edit', label: 'Edit Milestone 4', description: 'Edit DP Clearance Date milestone with remarks and document actions.', sortOrder: 159 },
+  { key: 'shipment.tab.port_customs.milestone_5.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_5_view', label: 'View Milestone 5', description: 'Customs Clearance Date milestone with token received date, remarks, and document access.', sortOrder: 160 },
+  { key: 'shipment.tab.port_customs.milestone_5.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_5_edit', label: 'Edit Milestone 5', description: 'Edit Customs Clearance Date milestone with token received date, remarks, and document actions.', sortOrder: 161 },
+  { key: 'shipment.tab.port_customs.milestone_6.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_6_view', label: 'View Milestone 6', description: 'Municipality Check Date milestone with remarks and document access.', sortOrder: 162 },
+  { key: 'shipment.tab.port_customs.milestone_6.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'milestone_6_edit', label: 'Edit Milestone 6', description: 'Edit Municipality Check Date milestone with remarks and document actions.', sortOrder: 163 },
+  { key: 'shipment.tab.port_customs.transportation.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'transportation_view', label: 'View Transportation Arranged', description: 'Transportation arranged section with container-wise transport company, arranged date/time, transportation date/time, and delay view.', sortOrder: 164 },
+  { key: 'shipment.tab.port_customs.transportation.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'action', action: 'transportation_edit', label: 'Edit Transportation Arranged', description: 'Edit transportation arranged section with container-wise transport company, arranged date/time, transportation date/time, and save actions.', sortOrder: 165 },
 
   // ─── Storage Tab ──────────────────────────────────────────────────────────
   // Parent tab access
@@ -123,7 +136,6 @@ const DEFAULT_ROLE_PERMISSION_MAP = {
     'shipment.screen.create_shipment.extract',
     'shipment.screen.shipment_tracker.view',
     'shipment.tab.shipment_entry.view',
-    'shipment.field.shipment_entry.piNo.edit',
     'shipment.field.shipment_entry.supplierEmail.edit',
     'shipment.tab.shipment_tracker_split.view',
     'shipment.tab.shipment_tracker_split.edit',
@@ -144,6 +156,20 @@ const DEFAULT_ROLE_PERMISSION_MAP = {
     'shipment.screen.shipment_tracker.view',
     'shipment.tab.port_customs.view',
     'shipment.tab.port_customs.edit',
+    'shipment.tab.port_customs.milestone_1.view',
+    'shipment.tab.port_customs.milestone_1.edit',
+    'shipment.tab.port_customs.milestone_2.view',
+    'shipment.tab.port_customs.milestone_2.edit',
+    'shipment.tab.port_customs.milestone_3.view',
+    'shipment.tab.port_customs.milestone_3.edit',
+    'shipment.tab.port_customs.milestone_4.view',
+    'shipment.tab.port_customs.milestone_4.edit',
+    'shipment.tab.port_customs.milestone_5.view',
+    'shipment.tab.port_customs.milestone_5.edit',
+    'shipment.tab.port_customs.milestone_6.view',
+    'shipment.tab.port_customs.milestone_6.edit',
+    'shipment.tab.port_customs.transportation.view',
+    'shipment.tab.port_customs.transportation.edit',
     'shipment.tab.storage.view',
     'shipment.tab.storage.storage_allocation.view',
     'shipment.tab.storage.storage_allocation.edit',

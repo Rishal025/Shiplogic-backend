@@ -5,105 +5,106 @@ const controller = require('../controller/shipment.controller');
 const authMiddleware = require('../core/utils/authMiddleware');
 const authorize = require('../core/utils/authorize');
 
-// Multer: memory storage for document uploads (for Python service later)
+// Multer: memory storage for document uploads
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB per file
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB per file
   fileFilter: (req, file, cb) => {
     const allowed = /\.(pdf|jpg|jpeg|png|gif|webp)$/i.test(file.originalname);
     if (allowed) cb(null, true);
     else cb(new Error('Only PDF and image files are allowed'));
-  }
+  },
 });
 
-// Only Purchase can create shipment
+// ── Read endpoints — any active role ────────────────────────────────────────
+
+router.get('/',                    authMiddleware, authorize({ tag: 'any-active' }), controller.getAllShipments);
+router.get('/dashboard',           authMiddleware, authorize({ tag: 'any-active' }), controller.getShipmentSummary);
+router.get('/reports/export-data', authMiddleware, authorize({ tag: 'any-active' }), controller.getShipmentReportExportData);
+router.get('/reports/export/excel',authMiddleware, authorize({ tag: 'any-active' }), controller.downloadShipmentReportExcel);
+router.get('/reports/export/pdf',  authMiddleware, authorize({ tag: 'any-active' }), controller.downloadShipmentReportPdf);
+router.get('/:id',                 authMiddleware, authorize({ tag: 'any-active' }), controller.getShipmentById);
+
+// ── Write endpoints — role-specific (intentional business rules) ─────────────
+
+// Create shipment — Purchase team only
 router.post(
   '/create',
   authMiddleware,
-  authorize(['Purchase','Admin']),
+  authorize(['Purchase', 'Admin']),
   (req, res, next) => {
     upload.fields([
       { name: 'lpoDocument', maxCount: 1 },
       { name: 'proformaDocument', maxCount: 1 },
-      { name: 's1QualityReport', maxCount: 1 }
+      { name: 's1QualityReport', maxCount: 1 },
     ])(req, res, (err) => {
-      if (err) {
-        return res.status(400).json({ message: err.message || 'Invalid file upload' });
-      }
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
       next();
     });
   },
   controller.createShipment
 );
 
-// Extract data from PI/PO documents — calls Python service, returns mapped response only
+// Extract PI/PO documents — Purchase team only
 router.post(
   '/extract-documents',
   authMiddleware,
-  authorize(['Purchase','Admin']),
+  authorize(['Purchase', 'Admin']),
   (req, res, next) => {
     upload.fields([
       { name: 'document1', maxCount: 1 },
-      { name: 's1QualityReport', maxCount: 1 }
+      { name: 's1QualityReport', maxCount: 1 },
     ])(req, res, (err) => {
-      if (err) {
-        return res.status(400).json({ message: err.message || 'Invalid file upload' });
-      }
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
       next();
     });
   },
   controller.extractFromDocuments
 );
 
-// Extract bill number + packaging details from documents — calls Python purchase-tracker/fetch-details
+// Extract bill number — Purchase team only
 router.post(
   '/extract-bill-no',
   authMiddleware,
-  authorize(['Purchase','Admin']),
+  authorize(['Purchase', 'Admin']),
   (req, res, next) => {
     upload.fields([
       { name: 'file', maxCount: 1 },
-      { name: 'packaging_list_file', maxCount: 1 }
+      { name: 'packaging_list_file', maxCount: 1 },
     ])(req, res, (err) => {
-      if (err) {
-        return res.status(400).json({ message: err.message || 'Invalid file upload' });
-      }
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
       next();
     });
   },
   controller.extractBillNo
 );
 
+// Extract arrival notice — Logistics team only
 router.post(
   '/extract-arrival-notice',
   authMiddleware,
-  authorize(['Logistic','Admin']),
+  authorize(['Logistic', 'Admin']),
   (req, res, next) => {
     upload.single('file')(req, res, (err) => {
-      if (err) {
-        return res.status(400).json({ message: err.message || 'Invalid file upload' });
-      }
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
       next();
     });
   },
   controller.extractArrivalNotice
 );
 
-router.post(
-  '/container/planned',
-  authMiddleware,
-  authorize(['Purchase','Admin']),
-  controller.createPlannedContainersBulk
-);
+// Planned containers — Purchase team only
+router.post('/container/planned', authMiddleware, authorize(['Purchase', 'Admin']), controller.createPlannedContainersBulk);
 
+// Actual container (BL entry) — Purchase team only
 router.patch(
   '/container/actual/:id',
   authMiddleware,
-  authorize(['Purchase','Admin']),
+  authorize(['Purchase', 'Admin']),
   (req, res, next) => {
     upload.fields([
       { name: 'blDocument', maxCount: 1 },
-      { name: 'packaging_list_document', maxCount: 1 }
+      { name: 'packaging_list_document', maxCount: 1 },
     ])(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
       next();
@@ -112,10 +113,11 @@ router.patch(
   controller.addActualContainer
 );
 
+// BL details — Purchase team only
 router.patch(
   '/container/bl-details/:id',
   authMiddleware,
-  authorize(['Purchase','Admin']),
+  authorize(['Purchase', 'Admin']),
   (req, res, next) => {
     upload.fields([{ name: 'costSheetBookingDocument', maxCount: 1 }])(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -125,15 +127,16 @@ router.patch(
   controller.updateBLDetails
 );
 
+// FAS document tracker — FAS team only
 router.patch(
-  "/container/payment/:id",
+  '/container/payment/:id',
   authMiddleware,
-  authorize(['FAS','Admin']),
+  authorize(['FAS', 'Admin']),
   (req, res, next) => {
     upload.fields([
       { name: 'inwardCollectionAdviceDocument', maxCount: 1 },
       { name: 'murabahaContractSubmittedDocument', maxCount: 1 },
-      { name: 'documentsReleasedDocument', maxCount: 1 }
+      { name: 'documentsReleasedDocument', maxCount: 1 },
     ])(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
       next();
@@ -142,45 +145,38 @@ router.patch(
   controller.updateFASContainer
 );
 
-
+// Logistics details — Logistics team only
 router.patch(
-"/container/logistic/:id", 
-authMiddleware,
-authorize(['Logistic','Admin']),
-(req, res, next) => {
-  upload.fields([
-    { name: 'arrivalNoticeDocument', maxCount: 1 },
-    { name: 'advanceRequestDocument', maxCount: 1 },
-    { name: 'doReleasedDocument', maxCount: 1 },
-    { name: 'dpApprovalDocument', maxCount: 1 },
-    { name: 'customsClearanceDocument', maxCount: 1 },
-    { name: 'municipalityDocument', maxCount: 1 }
-  ])(req, res, (err) => {
-    if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
-    next();
-  });
-},
-controller.updateLogisticsDetails
-);
-
-router.patch(
-  "/container/clearence-payment/:id",
+  '/container/logistic/:id',
   authMiddleware,
-  authorize(['FAS','Admin']),
-  controller.addContainerPayment
+  authorize(['Logistic', 'Admin']),
+  (req, res, next) => {
+    upload.fields([
+      { name: 'arrivalNoticeDocument', maxCount: 1 },
+      { name: 'advanceRequestDocument', maxCount: 1 },
+      { name: 'doReleasedDocument', maxCount: 1 },
+      { name: 'dpApprovalDocument', maxCount: 1 },
+      { name: 'customsClearanceDocument', maxCount: 1 },
+      { name: 'municipalityDocument', maxCount: 1 },
+    ])(req, res, (err) => {
+      if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
+      next();
+    });
+  },
+  controller.updateLogisticsDetails
 );
 
-router.patch(
-"/container/clearance/:id", 
-authMiddleware,
-authorize(['Logistic','Admin']),
-controller.clearContainer
-);
+// Clearance payment — FAS team only
+router.patch('/container/clearence-payment/:id', authMiddleware, authorize(['FAS', 'Admin']), controller.addContainerPayment);
 
+// Clearance final — Logistics team only
+router.patch('/container/clearance/:id', authMiddleware, authorize(['Logistic', 'Admin']), controller.clearContainer);
+
+// Storage — Logistics team only
 router.patch(
   '/container/storage/:id',
   authMiddleware,
-  authorize(['Logistic','Admin']),
+  authorize(['Logistic', 'Admin']),
   (req, res, next) => {
     upload.any()(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -193,7 +189,7 @@ router.patch(
 router.patch(
   '/container/storage-row/:id/:rowIndex',
   authMiddleware,
-  authorize(['Logistic','Admin']),
+  authorize(['Logistic', 'Admin']),
   (req, res, next) => {
     upload.any()(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -203,10 +199,11 @@ router.patch(
   controller.updateStorageArrivalRow
 );
 
+// Quality — Purchase team only
 router.patch(
   '/container/quality/:id',
   authMiddleware,
-  authorize(['Purchase','Admin']),
+  authorize(['Purchase', 'Admin']),
   (req, res, next) => {
     upload.any()(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -216,10 +213,11 @@ router.patch(
   controller.updateQualityDetails
 );
 
+// Payment costing — FAS team only
 router.patch(
   '/container/payment-costing/:id',
   authMiddleware,
-  authorize(['FAS','Admin']),
+  authorize(['FAS', 'Admin']),
   (req, res, next) => {
     upload.any()(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -229,62 +227,10 @@ router.patch(
   controller.updatePaymentCostingDetails
 );
 
-router.patch(
-  '/container/grn/:id',
-  authMiddleware,
-  authorize(['Purchase','Admin']),
-  controller.addContainerGRN
-);
+// GRN — Purchase team only
+router.patch('/container/grn/:id', authMiddleware, authorize(['Purchase', 'Admin']), controller.addContainerGRN);
 
-router.get(
-  '/',
-  authMiddleware,
-  authorize(['Purchase','FAS','Logistic','Admin']),
-  controller.getAllShipments
-);
-
-
-router.get(
-  '/dashboard',
-  authMiddleware,
-  authorize(['Purchase','FAS','Logistic','Admin']),
-  controller.getShipmentSummary
-);
-
-router.get(
-  '/reports/export-data',
-  authMiddleware,
-  authorize(['Purchase','FAS','Logistic','Admin']),
-  controller.getShipmentReportExportData
-);
-
-router.get(
-  '/reports/export/excel',
-  authMiddleware,
-  authorize(['Purchase','FAS','Logistic','Admin']),
-  controller.downloadShipmentReportExcel
-);
-
-router.get(
-  '/reports/export/pdf',
-  authMiddleware,
-  authorize(['Purchase','FAS','Logistic','Admin']),
-  controller.downloadShipmentReportPdf
-);
-
-router.get(
-  '/:id',
-  authMiddleware,
-  authorize(['Purchase','FAS','Logistic','Admin']),
-  controller.getShipmentById
-);
-
-// Update vendor email on a shipment
-router.patch(
-  '/:id/supplier-email',
-  authMiddleware,
-  authorize(['Purchase','Admin']),
-  controller.updateSupplierEmail
-);
+// Supplier email — Purchase team only
+router.patch('/:id/supplier-email', authMiddleware, authorize(['Purchase', 'Admin']), controller.updateSupplierEmail);
 
 module.exports = router;

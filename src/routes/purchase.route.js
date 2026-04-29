@@ -4,36 +4,12 @@ const controller = require('../controller/purchase.controller');
 const authMiddleware = require('../core/utils/authMiddleware');
 const authorize = require('../core/utils/authorize');
 
-// CREATE PO (Purchase only)
-router.post(
-  '/create',
-  authMiddleware,
-  authorize(['Purchase']),
-  controller.createPurchaseOrder
-);
+// Read — any active role
+router.get('/',    authMiddleware, authorize({ tag: 'any-active' }), controller.getPurchaseOrders);
+router.get('/:id', authMiddleware, authorize({ tag: 'any-active' }), controller.getPurchaseOrderById);
 
-// GET ALL POs (All roles can view)
-router.get(
-  '/',
-  authMiddleware,
-  authorize(['Purchase','FAS','Logistics','Manager','Admin']),
-  controller.getPurchaseOrders
-);
-
-// GET SINGLE PO
-router.get(
-  '/:id',
-  authMiddleware,
-  authorize(['Purchase','FAS','Logistics','Manager','Admin']),
-  controller.getPurchaseOrderById
-);
-
-// UPDATE PO (Purchase only)
-router.patch(
-  '/:id',
-  authMiddleware,
-  authorize(['Purchase','Admin']),
-  controller.updatePurchaseOrder
-);
+// Write — Purchase team only (intentional business rule)
+router.post('/create', authMiddleware, authorize(['Purchase', 'Admin']), controller.createPurchaseOrder);
+router.patch('/:id',   authMiddleware, authorize(['Purchase', 'Admin']), controller.updatePurchaseOrder);
 
 module.exports = router;

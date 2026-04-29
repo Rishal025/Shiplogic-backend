@@ -4,6 +4,7 @@ const {databaseConnect} = require('./config/db');
 const {createFirstAdmin} = require('./config/createFirstAdmin');
 const { seedShipmentPermissionsAndDefaults } = require('./config/seedAccessControl');
 const { seedItemsFromCsv } = require('./config/seedItems');
+const roleRegistry = require('./core/utils/roleRegistry');
 const User = require('./models/auth.model');
 const Notification = require('./models/notification.model');
 
@@ -117,6 +118,10 @@ server.on('error', (err) => {
         await createFirstAdmin();
         await seedShipmentPermissionsAndDefaults();
         await seedItemsFromCsv();
+        // Load all active roles into the in-memory registry and start
+        // the background refresh so new roles are picked up automatically.
+        await roleRegistry.initialize();
+        roleRegistry.startAutoRefresh();
         console.log('✅ Database connected, admin seeded, access control seeded, and items seeded');
     } catch (err) {
         console.error('❌ Database connection error:', err.message);

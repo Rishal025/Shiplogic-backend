@@ -4,10 +4,13 @@ const controller = require('../controller/warehouse.controller');
 const authMiddleware = require('../core/utils/authMiddleware');
 const authorize = require('../core/utils/authorize');
 
-router.post('/', authMiddleware, authorize(['Admin']), controller.createWarehouse);
-router.get('/', authMiddleware, authorize(['Admin', 'Logistic', 'Purchase']), controller.getAllWarehouses);
-router.get('/:id', authMiddleware, authorize(['Admin', 'Logistic']), controller.getWarehouseById);
-router.put('/:id', authMiddleware, authorize(['Admin']), controller.updateWarehouse);
-router.delete('/:id', authMiddleware, authorize(['Admin']), controller.deleteWarehouse);
+// Read — any active role (warehouses are referenced by multiple teams)
+router.get('/',    authMiddleware, authorize({ tag: 'any-active' }), controller.getAllWarehouses);
+router.get('/:id', authMiddleware, authorize({ tag: 'any-active' }), controller.getWarehouseById);
+
+// Write — admin only
+router.post('/',      authMiddleware, authorize({ tag: 'admin-only' }), controller.createWarehouse);
+router.put('/:id',    authMiddleware, authorize({ tag: 'admin-only' }), controller.updateWarehouse);
+router.delete('/:id', authMiddleware, authorize({ tag: 'admin-only' }), controller.deleteWarehouse);
 
 module.exports = router;

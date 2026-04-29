@@ -17,7 +17,7 @@ router.post('/cache/refresh-user/:userId', accessControlController.refreshUserPe
 router.get('/cache/metrics', accessControlController.getPermissionCacheMetrics);
 
 // Admin and Manager only endpoints
-router.use(authorize(['Admin', 'Manager']));
+router.use(authorize({ tag: 'admin-only' }));
 
 // Existing endpoints
 router.get('/roles', accessControlController.listRoles);

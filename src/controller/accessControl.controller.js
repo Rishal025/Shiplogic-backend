@@ -5,6 +5,7 @@ const RolePermission = require('../models/rolePermission.model');
 const User = require('../models/auth.model');
 const { normalizeRole } = require('../core/utils/roleHelpers');
 const { sendInternalUserInviteEmail } = require('../services/mail.service');
+const roleRegistry = require('../core/utils/roleRegistry');
 const {
   DEFAULT_ROLES,
   ensureRolesSeeded,
@@ -129,6 +130,9 @@ exports.createRole = async (req, res) => {
       isSystem: false,
     });
 
+    // Keep the in-memory role registry in sync immediately
+    if (role.isActive) roleRegistry.registerRole(role.key);
+
     await logAudit({
       userId: req.user._id,
       module: 'Access Control',
@@ -163,6 +167,13 @@ exports.updateRole = async (req, res) => {
     }
 
     await role.save();
+
+    // Keep the in-memory role registry in sync immediately
+    if (role.isActive) {
+      roleRegistry.registerRole(role.key);
+    } else {
+      roleRegistry.unregisterRole(role.key);
+    }
 
     await logAudit({
       userId: req.user._id,
@@ -243,6 +254,24 @@ exports.updateRolePermissions = async (req, res) => {
     const permissionKeys = Array.isArray(req.body.permissionKeys)
       ? req.body.permissionKeys.map((key) => String(key || '').trim()).filter(Boolean)
       : [];
+
+    // ── Auto-include parent permissions ──────────────────────────────────────
+    // If any shipment tracker tab/action permission is assigned, automatically
+    // include the parent screen permission and the shipments menu item so the
+    // user can actually reach the tracker. This prevents the "Tracker access
+    // restricted" error for custom roles (Quality, Warehouse, etc.) whose
+    // admins only tick tab-level permissions without the parent screen key.
+    const TRACKER_TAB_PREFIX = 'shipment.tab.';
+    const hasAnyTrackerTab = permissionKeys.some((k) => k.startsWith(TRACKER_TAB_PREFIX));
+    if (hasAnyTrackerTab) {
+      if (!permissionKeys.includes('shipment.screen.shipment_tracker.view')) {
+        permissionKeys.push('shipment.screen.shipment_tracker.view');
+      }
+      if (!permissionKeys.includes('menu.shipments.view')) {
+        permissionKeys.push('menu.shipments.view');
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     const validPermissions = await Permission.find({ key: { $in: permissionKeys } });
     const validKeys = new Set(validPermissions.map((permission) => permission.key));
