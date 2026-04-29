@@ -313,12 +313,38 @@ exports.updateRolePermissions = async (req, res) => {
 
 exports.listUsers = async (req, res) => {
   try {
-    const users = await User.find().sort({ createdAt: -1 });
-    const roles = await Role.find({ isActive: true }).sort({ isSystem: -1, name: 1 });
+    const page  = Math.max(1, parseInt(req.query.page  || '1',  10));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
+    const search = String(req.query.search || '').trim();
+
+    const query = {};
+    if (search) {
+      query.$or = [
+        { name:  { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { role:  { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const [users, total, roles] = await Promise.all([
+      User.find(query)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      User.countDocuments(query),
+      Role.find({ isActive: true }).sort({ isSystem: -1, name: 1 }).lean(),
+    ]);
 
     res.json({
       users: users.map(userResponse),
       roles: roles.map(roleResponse),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     console.error(error);
