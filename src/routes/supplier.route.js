@@ -42,6 +42,6 @@ router.get('/all', authMiddleware, authorize({ tag: 'any-active' }), async (req,
 router.get('/:id', authMiddleware, authorize({ tag: 'any-active' }), supplierController.getSupplierById);
 
 // Write — Purchase, FAS, and Admin (intentional business rule)
-router.post('/create', authMiddleware, authorize(['Purchase', 'FAS', 'Admin']), supplierController.createSupplier);
+router.post('/create', authMiddleware, authorize({ tag: 'any-active' }), supplierController.createSupplier);
 
 module.exports = router;

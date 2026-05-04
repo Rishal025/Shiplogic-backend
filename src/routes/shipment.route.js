@@ -31,7 +31,7 @@ router.get('/:id',                 authMiddleware, authorize({ tag: 'any-active'
 router.post(
   '/create',
   authMiddleware,
-  authorize(['Purchase', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.fields([
       { name: 'lpoDocument', maxCount: 1 },
@@ -49,7 +49,7 @@ router.post(
 router.post(
   '/extract-documents',
   authMiddleware,
-  authorize(['Purchase', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.fields([
       { name: 'document1', maxCount: 1 },
@@ -66,7 +66,7 @@ router.post(
 router.post(
   '/extract-bill-no',
   authMiddleware,
-  authorize(['Purchase', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.fields([
       { name: 'file', maxCount: 1 },
@@ -94,13 +94,13 @@ router.post(
 );
 
 // Planned containers — Purchase team only
-router.post('/container/planned', authMiddleware, authorize(['Purchase', 'Admin']), controller.createPlannedContainersBulk);
+router.post('/container/planned', authMiddleware, authorize({ tag: 'any-active' }), controller.createPlannedContainersBulk);
 
 // Actual container (BL entry) — Purchase team only
 router.patch(
   '/container/actual/:id',
   authMiddleware,
-  authorize(['Purchase', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.fields([
       { name: 'blDocument', maxCount: 1 },
@@ -117,7 +117,7 @@ router.patch(
 router.patch(
   '/container/bl-details/:id',
   authMiddleware,
-  authorize(['Purchase', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.fields([{ name: 'costSheetBookingDocument', maxCount: 1 }])(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -203,7 +203,7 @@ router.patch(
 router.patch(
   '/container/quality/:id',
   authMiddleware,
-  authorize(['Purchase', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.any()(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -228,9 +228,9 @@ router.patch(
 );
 
 // GRN — Purchase team only
-router.patch('/container/grn/:id', authMiddleware, authorize(['Purchase', 'Admin']), controller.addContainerGRN);
+router.patch('/container/grn/:id', authMiddleware, authorize({ tag: 'any-active' }), controller.addContainerGRN);
 
 // Supplier email — Purchase team only
-router.patch('/:id/supplier-email', authMiddleware, authorize(['Purchase', 'Admin']), controller.updateSupplierEmail);
+router.patch('/:id/supplier-email', authMiddleware, authorize({ tag: 'any-active' }), controller.updateSupplierEmail);
 
 module.exports = router;

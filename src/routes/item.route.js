@@ -10,8 +10,8 @@ router.get('/by-code/:itemCode',authMiddleware, authorize({ tag: 'any-active' })
 router.get('/:id',              authMiddleware, authorize({ tag: 'any-active' }), itemController.getItemById);
 
 // Write — Purchase, FAS, and Admin (intentional business rule)
-router.post('/create', authMiddleware, authorize(['Purchase', 'FAS', 'Admin']), itemController.createItem);
-router.put('/:id',     authMiddleware, authorize(['Purchase', 'FAS', 'Admin']), itemController.updateItem);
-router.delete('/:id',  authMiddleware, authorize(['Purchase', 'FAS', 'Admin']), itemController.deleteItem);
+router.post('/create', authMiddleware, authorize({ tag: 'any-active' }), itemController.createItem);
+router.put('/:id',     authMiddleware, authorize({ tag: 'any-active' }), itemController.updateItem);
+router.delete('/:id',  authMiddleware, authorize({ tag: 'any-active' }), itemController.deleteItem);
 
 module.exports = router;
