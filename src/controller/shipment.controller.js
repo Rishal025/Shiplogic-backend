@@ -146,6 +146,18 @@ const PAYMENT_COSTING_APPROVAL_STATUSES = {
   approved: 'approved',
 };
 
+const STORAGE_ALLOCATION_APPROVAL_STATUSES = {
+  draft: 'draft',
+  pendingWarehouseManager: 'pending_warehouse_manager',
+  approved: 'approved',
+};
+
+const STORAGE_ARRIVAL_APPROVAL_STATUSES = {
+  draft: 'draft',
+  pendingWarehouseManager: 'pending_warehouse_manager',
+  approved: 'approved',
+};
+
 const cloneForAudit = (value) => JSON.parse(JSON.stringify(value || {}));
 
 const buildClearingAdvancePendingApproval = (user) => ({
@@ -166,6 +178,22 @@ const buildPaymentCostingPendingApproval = (user) => ({
   fasManagerApprovedBy: null,
 });
 
+const buildStorageAllocationPendingApproval = (user) => ({
+  status: STORAGE_ALLOCATION_APPROVAL_STATUSES.pendingWarehouseManager,
+  submittedAt: new Date(),
+  submittedBy: user?._id || null,
+  warehouseManagerApprovedAt: null,
+  warehouseManagerApprovedBy: null,
+});
+
+const buildStorageArrivalPendingApproval = (user) => ({
+  status: STORAGE_ARRIVAL_APPROVAL_STATUSES.pendingWarehouseManager,
+  submittedAt: new Date(),
+  submittedBy: user?._id || null,
+  warehouseManagerApprovedAt: null,
+  warehouseManagerApprovedBy: null,
+});
+
 const hasSavedClearingAdvanceData = (container) => {
   const rows = container?.actual?.costSheetBookings || [];
   return Array.isArray(rows) && rows.some((row) =>
@@ -179,6 +207,28 @@ const hasSavedPaymentCostingData = (container) => {
     String(row?.refBillNo || '').trim().length > 0 ||
     String(row?.refBillVendor || '').trim().length > 0 ||
     !!row?.refBillDate
+  );
+};
+
+const hasSavedStorageAllocationData = (container) => {
+  const rows = container?.actual?.storageAllocations || [];
+  return Array.isArray(rows) && rows.some((row) =>
+    String(row?.containerSerialNo || '').trim().length > 0 ||
+    Number(row?.bags || 0) > 0 ||
+    String(row?.warehouse || '').trim().length > 0
+  );
+};
+
+const hasSavedStorageArrivalData = (container) => {
+  const rows = container?.actual?.storageSplits || [];
+  return Array.isArray(rows) && rows.some((row) =>
+    !!row?.receivedOnDate ||
+    String(row?.receivedOnTime || '').trim().length > 0 ||
+    String(row?.grn || '').trim().length > 0 ||
+    String(row?.batch || '').trim().length > 0 ||
+    !!row?.productionDate ||
+    !!row?.expiryDate ||
+    String(row?.documentUrl || '').trim().length > 0
   );
 };
 
@@ -1238,6 +1288,7 @@ exports.updateBLDetails = async (req, res) => {
     const parsedStorageAllocations = parseJsonField(storageAllocations);
     const parsedPackagingList = parseJsonField(packagingList);
     const isClearingAdvanceSave = Array.isArray(parsedCostSheetBookings) || !!costSheetBookingDocument;
+    const isStorageAllocationSave = Array.isArray(parsedStorageAllocations);
 
     if (parsedPackagingList) {
       container.actual.packagingList = {
@@ -1302,6 +1353,10 @@ exports.updateBLDetails = async (req, res) => {
       container.actual.clearingAdvanceApproval = buildClearingAdvancePendingApproval(req.user);
     }
 
+    if (isStorageAllocationSave) {
+      container.actual.storageAllocationApproval = buildStorageAllocationPendingApproval(req.user);
+    }
+
     await container.save();
 
     // Advance shipment stage to B/L Details
@@ -1317,6 +1372,15 @@ exports.updateBLDetails = async (req, res) => {
           sectionLabel: 'Clearing Advance',
           actor: req.user,
           approvalStage: 'Pending FAS Approval',
+        });
+      } else if (isStorageAllocationSave) {
+        fireAndForgetWorkflowEmail({
+          role: 'warehouse',
+          shipment: shipmentForBL,
+          container,
+          sectionLabel: 'Storage Allocations',
+          actor: req.user,
+          approvalStage: 'Pending Warehouse Manager Approval',
         });
       } else {
         fireAndForgetWorkflowEmail({
@@ -1339,6 +1403,17 @@ exports.updateBLDetails = async (req, res) => {
         before: beforeUpdate,
         after: cloneForAudit(container.toObject()),
         remarks: 'Clearing advance submitted for FAS approval'
+      });
+    } else if (isStorageAllocationSave) {
+      await logAudit({
+        userId: req.user._id,
+        module: 'Logistics',
+        entity: 'Container',
+        entityId: container._id,
+        action: 'SubmitStorageAllocations',
+        before: beforeUpdate,
+        after: cloneForAudit(container.toObject()),
+        remarks: 'Storage allocations submitted for warehouse manager approval'
       });
     }
 
@@ -1482,6 +1557,7 @@ exports.updateLogisticsDetails = async (req, res) => {
       municipalityDate,
       municipalityRemarks,
       sectionKey,
+      bulkSectionKeys,
       transportationBooked,
       deliveryOrderDocumentUrl,
       deliveryOrderDate,
@@ -1505,6 +1581,7 @@ exports.updateLogisticsDetails = async (req, res) => {
     const parsedTransportationBooked = parseJsonField(transportationBooked);
     const parsedDeliverySchedules = parseJsonField(deliverySchedules);
     const parsedWarehouseSchedules = parseJsonField(warehouseSchedules);
+    const parsedBulkSectionKeys = parseJsonField(bulkSectionKeys);
 
     if (arrivalOn !== undefined) container.actual.arrivalOn = toDateOrNull(arrivalOn);
     if (arrivalNoticeFreeRetentionDays !== undefined) {
@@ -1640,7 +1717,16 @@ exports.updateLogisticsDetails = async (req, res) => {
     container.status = "Arrived";
 
     // Persist section lock if sectionKey is provided
-    if (sectionKey) {
+    if (Array.isArray(parsedBulkSectionKeys) && parsedBulkSectionKeys.length > 0) {
+      if (!Array.isArray(container.actual.lockedLogisticsSections)) {
+        container.actual.lockedLogisticsSections = [];
+      }
+      parsedBulkSectionKeys.forEach((key) => {
+        if (key && !container.actual.lockedLogisticsSections.includes(key)) {
+          container.actual.lockedLogisticsSections.push(key);
+        }
+      });
+    } else if (sectionKey) {
       if (!Array.isArray(container.actual.lockedLogisticsSections)) {
         container.actual.lockedLogisticsSections = [];
       }
@@ -1661,7 +1747,12 @@ exports.updateLogisticsDetails = async (req, res) => {
         role: WORKFLOW_NOTIFICATION_ROLE_MAP.logistics,
         shipment: shipmentForLogistics,
         container,
-        sectionLabel: sectionKey ? `Port & Customs - ${sectionKey}` : 'Port & Customs',
+        sectionLabel:
+          Array.isArray(parsedBulkSectionKeys) && parsedBulkSectionKeys.length > 0
+            ? 'Port & Customs - Bulk Save'
+            : sectionKey
+              ? `Port & Customs - ${sectionKey}`
+              : 'Port & Customs',
         actor: req.user,
       });
     }
@@ -1671,9 +1762,14 @@ exports.updateLogisticsDetails = async (req, res) => {
       return res.status(500).json({ message: "Shipment not found" });
     }
 
-    console.log('✅ [Logistics] Successfully updated section:', sectionKey || 'All');
+    console.log('✅ [Logistics] Successfully updated section:', Array.isArray(parsedBulkSectionKeys) && parsedBulkSectionKeys.length > 0 ? `bulk(${parsedBulkSectionKeys.join(',')})` : (sectionKey || 'All'));
     res.status(200).json({
-      message: sectionKey ? `${sectionKey} updated successfully` : "Logistics details updated successfully",
+      message:
+        Array.isArray(parsedBulkSectionKeys) && parsedBulkSectionKeys.length > 0
+          ? 'Bulk logistics details updated successfully'
+          : sectionKey
+            ? `${sectionKey} updated successfully`
+            : "Logistics details updated successfully",
       container,
       shipment: {
         actualQtyMT: shipment.actualQtyMT,
@@ -1895,6 +1991,8 @@ exports.updateStorageDetails = async (req, res) => {
       });
     }
 
+    container.actual.storageArrivalApproval = buildStorageArrivalPendingApproval(req.user);
+
     await container.save();
 
     // Advance shipment stage to Storage
@@ -1903,11 +2001,12 @@ exports.updateStorageDetails = async (req, res) => {
       advanceShipmentStage(shipmentForStorage, 'Storage');
       await shipmentForStorage.save();
       fireAndForgetWorkflowEmail({
-        role: WORKFLOW_NOTIFICATION_ROLE_MAP.storage,
+        role: 'warehouse',
         shipment: shipmentForStorage,
         container,
-        sectionLabel: 'Storage Allocation',
+        sectionLabel: 'Storage Arrival',
         actor: req.user,
+        approvalStage: 'Pending Warehouse Manager Approval',
       });
     }
 
@@ -1974,15 +2073,18 @@ exports.updateStorageArrivalRow = async (req, res) => {
       });
     }
 
+    container.actual.storageArrivalApproval = buildStorageArrivalPendingApproval(req.user);
+
     await container.save();
     const shipmentForStorageArrival = await Shipment.findById(container.shipmentId);
     if (shipmentForStorageArrival) {
       fireAndForgetWorkflowEmail({
-        role: WORKFLOW_NOTIFICATION_ROLE_MAP.storage,
+        role: 'warehouse',
         shipment: shipmentForStorageArrival,
         container,
         sectionLabel: `Storage Arrival Row ${rowIndex + 1}`,
         actor: req.user,
+        approvalStage: 'Pending Warehouse Manager Approval',
       });
     }
     res.json({ message: 'Storage arrival row updated successfully', container });
@@ -2359,6 +2461,120 @@ exports.approvePaymentCosting = async (req, res) => {
     });
 
     return res.json({ message: 'Payment costing approved successfully', container });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+exports.approveStorageAllocations = async (req, res) => {
+  try {
+    const container = await Container.findById(req.params.id);
+    if (!container) return res.status(404).json({ message: 'Container not found' });
+    if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
+
+    const beforeUpdate = cloneForAudit(container.toObject());
+    const currentState = container.actual.storageAllocationApproval || { status: STORAGE_ALLOCATION_APPROVAL_STATUSES.draft };
+    const effectiveStatus =
+      currentState.status === STORAGE_ALLOCATION_APPROVAL_STATUSES.draft && hasSavedStorageAllocationData(container)
+        ? STORAGE_ALLOCATION_APPROVAL_STATUSES.pendingWarehouseManager
+        : currentState.status;
+
+    if (effectiveStatus !== STORAGE_ALLOCATION_APPROVAL_STATUSES.pendingWarehouseManager) {
+      if (effectiveStatus === STORAGE_ALLOCATION_APPROVAL_STATUSES.approved) {
+        return res.status(400).json({ message: 'Storage allocations are already approved.' });
+      }
+      return res.status(400).json({ message: 'Storage allocations must be saved before they can be approved.' });
+    }
+
+    const allowed = await hasRoleOrPermission(
+      req.user,
+      'shipment.tab.bl_details.storage_allocations.approve_warehouse_manager',
+      ['warehouse', 'Admin', 'Manager', 'Management']
+    );
+    if (!allowed) {
+      return res.status(403).json({ message: 'You do not have permission to approve storage allocations.' });
+    }
+
+    container.actual.storageAllocationApproval = {
+      ...currentState,
+      status: STORAGE_ALLOCATION_APPROVAL_STATUSES.approved,
+      submittedAt: currentState.submittedAt || new Date(),
+      submittedBy: currentState.submittedBy || null,
+      warehouseManagerApprovedAt: new Date(),
+      warehouseManagerApprovedBy: req.user._id,
+    };
+    await container.save();
+
+    await logAudit({
+      userId: req.user._id,
+      module: 'Warehouse',
+      entity: 'Container',
+      entityId: container._id,
+      action: 'ApproveStorageAllocationsWarehouseManager',
+      before: beforeUpdate,
+      after: cloneForAudit(container.toObject()),
+      remarks: 'Storage allocations approved by warehouse manager'
+    });
+
+    return res.json({ message: 'Storage allocations approved successfully', container });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+exports.approveStorageArrival = async (req, res) => {
+  try {
+    const container = await Container.findById(req.params.id);
+    if (!container) return res.status(404).json({ message: 'Container not found' });
+    if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
+
+    const beforeUpdate = cloneForAudit(container.toObject());
+    const currentState = container.actual.storageArrivalApproval || { status: STORAGE_ARRIVAL_APPROVAL_STATUSES.draft };
+    const effectiveStatus =
+      currentState.status === STORAGE_ARRIVAL_APPROVAL_STATUSES.draft && hasSavedStorageArrivalData(container)
+        ? STORAGE_ARRIVAL_APPROVAL_STATUSES.pendingWarehouseManager
+        : currentState.status;
+
+    if (effectiveStatus !== STORAGE_ARRIVAL_APPROVAL_STATUSES.pendingWarehouseManager) {
+      if (effectiveStatus === STORAGE_ARRIVAL_APPROVAL_STATUSES.approved) {
+        return res.status(400).json({ message: 'Storage arrival is already approved.' });
+      }
+      return res.status(400).json({ message: 'Storage arrival must be saved before it can be approved.' });
+    }
+
+    const allowed = await hasRoleOrPermission(
+      req.user,
+      'shipment.tab.storage.storage_arrival.approve_warehouse_manager',
+      ['warehouse', 'Admin', 'Manager', 'Management']
+    );
+    if (!allowed) {
+      return res.status(403).json({ message: 'You do not have permission to approve storage arrival.' });
+    }
+
+    container.actual.storageArrivalApproval = {
+      ...currentState,
+      status: STORAGE_ARRIVAL_APPROVAL_STATUSES.approved,
+      submittedAt: currentState.submittedAt || new Date(),
+      submittedBy: currentState.submittedBy || null,
+      warehouseManagerApprovedAt: new Date(),
+      warehouseManagerApprovedBy: req.user._id,
+    };
+    await container.save();
+
+    await logAudit({
+      userId: req.user._id,
+      module: 'Warehouse',
+      entity: 'Container',
+      entityId: container._id,
+      action: 'ApproveStorageArrivalWarehouseManager',
+      before: beforeUpdate,
+      after: cloneForAudit(container.toObject()),
+      remarks: 'Storage arrival approved by warehouse manager'
+    });
+
+    return res.json({ message: 'Storage arrival approved successfully', container });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -2971,6 +3187,8 @@ exports.getShipmentById = async (req, res) => {
             costSheetBookings: a.costSheetBookings || [],
             clearingAdvanceApproval: a.clearingAdvanceApproval || null,
             storageAllocations: a.storageAllocations || [],
+            storageAllocationApproval: a.storageAllocationApproval || null,
+            storageArrivalApproval: a.storageArrivalApproval || null,
             maximumRetentionDate: a.maximumRetentionDate,
             DHL: a.DHL,
             courierTrackNo: a.courierTrackNo,

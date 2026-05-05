@@ -19,6 +19,7 @@ const ADMIN_ROLE_KEYS = new Set(['Admin', 'Manager', 'Management']);
 
 // In-memory cache: Set of active role keys loaded from DB.
 let _activeRoleKeys = new Set();
+let _activeRoleKeysLower = new Set();
 let _initialized = false;
 let _refreshTimer = null;
 
@@ -33,6 +34,7 @@ async function initialize() {
   try {
     const roles = await Role.find({ isActive: true }).select('key').lean();
     _activeRoleKeys = new Set(roles.map((r) => r.key));
+    _activeRoleKeysLower = new Set(roles.map((r) => String(r.key || '').toLowerCase()));
     _initialized = true;
     console.log(`✅ RoleRegistry: loaded ${_activeRoleKeys.size} active role(s): [${[..._activeRoleKeys].join(', ')}]`);
   } catch (err) {
@@ -82,7 +84,7 @@ function getAllActiveRoleKeys() {
  */
 function isActiveRole(roleKey) {
   if (!_initialized) return true; // fail-open during cold start
-  return _activeRoleKeys.has(roleKey);
+  return _activeRoleKeys.has(roleKey) || _activeRoleKeysLower.has(String(roleKey || '').toLowerCase());
 }
 
 /**
@@ -102,6 +104,7 @@ function isAdminRole(roleKey) {
  */
 function registerRole(roleKey) {
   _activeRoleKeys.add(roleKey);
+  _activeRoleKeysLower.add(String(roleKey || '').toLowerCase());
 }
 
 /**
@@ -111,6 +114,7 @@ function registerRole(roleKey) {
  */
 function unregisterRole(roleKey) {
   _activeRoleKeys.delete(roleKey);
+  _activeRoleKeysLower.delete(String(roleKey || '').toLowerCase());
 }
 
 module.exports = {

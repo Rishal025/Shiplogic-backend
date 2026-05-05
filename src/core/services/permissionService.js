@@ -244,7 +244,12 @@ class PermissionService {
     try {
       // Optimized aggregation query
       const result = await RolePermission.aggregate([
-        { $match: { roleKey: roleKey, allowed: true } },
+        {
+          $match: {
+            roleKey: { $regex: `^${String(roleKey || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+            allowed: true
+          }
+        },
         { 
           $lookup: {
             from: 'permissions',

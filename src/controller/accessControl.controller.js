@@ -85,6 +85,14 @@ function generateTemporaryPassword(length = Number(process.env.INVITE_PASSWORD_L
   return Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
+function generateRoleKey(name = '') {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
 async function getAssignedPermissionKeys(roleKey) {
   const normalizedRoleKey = normalizeRole(roleKey);
   if (normalizedRoleKey === 'Manager') {
@@ -92,7 +100,11 @@ async function getAssignedPermissionKeys(roleKey) {
     return allPermissions.map((permission) => permission.key);
   }
 
-  const assignments = await RolePermission.find({ roleKey: normalizedRoleKey, allowed: true }).lean();
+  const roleKeyPattern = `^${String(normalizedRoleKey || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+  const assignments = await RolePermission.find({
+    roleKey: { $regex: roleKeyPattern, $options: 'i' },
+    allowed: true
+  }).lean();
   return assignments.map((assignment) => assignment.permissionKey);
 }
 
@@ -109,12 +121,16 @@ exports.listRoles = async (req, res) => {
 
 exports.createRole = async (req, res) => {
   try {
-    const key = String(req.body.key || '').trim();
     const name = String(req.body.name || '').trim();
     const description = String(req.body.description || '').trim();
+    const key = generateRoleKey(req.body.key || name);
 
-    if (!key || !name) {
-      return res.status(400).json({ message: 'Role key and name are required' });
+    if (!name) {
+      return res.status(400).json({ message: 'Role name is required' });
+    }
+
+    if (!key) {
+      return res.status(400).json({ message: 'Role key could not be generated from the role name' });
     }
 
     const existing = await Role.findOne({ key });

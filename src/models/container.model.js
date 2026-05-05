@@ -27,6 +27,30 @@ const paymentCostingApprovalStateSchema = new mongoose.Schema({
   fasManagerApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, { _id: false });
 
+const storageAllocationApprovalStateSchema = new mongoose.Schema({
+  status: {
+    type: String,
+    enum: ['draft', 'pending_warehouse_manager', 'approved'],
+    default: 'draft',
+  },
+  submittedAt: { type: Date, default: null },
+  submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  warehouseManagerApprovedAt: { type: Date, default: null },
+  warehouseManagerApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+}, { _id: false });
+
+const storageArrivalApprovalStateSchema = new mongoose.Schema({
+  status: {
+    type: String,
+    enum: ['draft', 'pending_warehouse_manager', 'approved'],
+    default: 'draft',
+  },
+  submittedAt: { type: Date, default: null },
+  submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  warehouseManagerApprovedAt: { type: Date, default: null },
+  warehouseManagerApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+}, { _id: false });
+
 const actualContainerSchema = new mongoose.Schema({
   actualSerialNo: { type: String },
   commercialInvoiceNo: { type: String },
@@ -209,6 +233,16 @@ const actualContainerSchema = new mongoose.Schema({
     warehouse: { type: String },
     storageAvailability: { type: Number }
   }],
+  storageAllocationApproval: {
+    type: storageAllocationApprovalStateSchema,
+    default: () => ({
+      status: 'draft',
+      submittedAt: null,
+      submittedBy: null,
+      warehouseManagerApprovedAt: null,
+      warehouseManagerApprovedBy: null,
+    }),
+  },
   maximumRetentionDate: { type: Date },
   transportationBooked: [{
     sn: { type: Number },
@@ -241,6 +275,16 @@ const actualContainerSchema = new mongoose.Schema({
   }],
   storageDocumentUrl: { type: String },
   storageDocumentName: { type: String },
+  storageArrivalApproval: {
+    type: storageArrivalApprovalStateSchema,
+    default: () => ({
+      status: 'draft',
+      submittedAt: null,
+      submittedBy: null,
+      warehouseManagerApprovedAt: null,
+      warehouseManagerApprovedBy: null,
+    }),
+  },
   qualityRows: [{
     sn: { type: Number },
     sampleNo: { type: String },

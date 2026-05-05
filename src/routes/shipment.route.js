@@ -134,6 +134,20 @@ router.patch(
   controller.approveClearingAdvance
 );
 
+router.patch(
+  '/container/bl-details/:id/storage-allocations/approve',
+  authMiddleware,
+  authorize({ tag: 'any-active' }),
+  controller.approveStorageAllocations
+);
+
+router.patch(
+  '/container/storage/:id/approve',
+  authMiddleware,
+  authorize({ tag: 'any-active' }),
+  controller.approveStorageArrival
+);
+
 // Document tracker payment endpoints — permission-driven access
 router.patch(
   '/container/payment/:id',

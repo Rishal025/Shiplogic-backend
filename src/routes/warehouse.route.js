@@ -5,6 +5,7 @@ const authMiddleware = require('../core/utils/authMiddleware');
 const authorize = require('../core/utils/authorize');
 
 // Read — any active role (warehouses are referenced by multiple teams)
+router.get('/storekeepers/options', authMiddleware, authorize({ tag: 'admin-only' }), controller.getAssignableStorekeepers);
 router.get('/',    authMiddleware, authorize({ tag: 'any-active' }), controller.getAllWarehouses);
 router.get('/:id', authMiddleware, authorize({ tag: 'any-active' }), controller.getWarehouseById);
 

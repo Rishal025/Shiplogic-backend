@@ -6,7 +6,11 @@ const warehouseSchema = new mongoose.Schema({
   location: { type: String },
   managerName: { type: String },
   capacity: { type: Number },
-  status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' }
+  status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' },
+  assignedStorekeepers: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  }],
 }, { timestamps: true });
 
 module.exports = mongoose.model('Warehouse', warehouseSchema);

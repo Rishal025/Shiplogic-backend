@@ -1,6 +1,7 @@
 const Role = require('../models/role.model');
 const Permission = require('../models/permission.model');
 const RolePermission = require('../models/rolePermission.model');
+const User = require('../models/auth.model');
 
 const DEFAULT_ROLES = [
   { key: 'Admin', name: 'Admin', description: 'Full system access', isSystem: true },
@@ -8,6 +9,7 @@ const DEFAULT_ROLES = [
   { key: 'Logistic', name: 'Logistic', description: 'Logistics and operations team', isSystem: true },
   { key: 'FAS', name: 'FAS', description: 'Finance and accounting services', isSystem: true },
   { key: 'FasManager', name: 'Fas manager', description: 'Finance approvals manager', isSystem: true },
+  { key: 'warehouse', name: 'Warehouse manager', description: 'Warehouse approvals manager', isSystem: true },
   { key: 'Manager', name: 'Manager', description: 'Cross-functional management access', isSystem: true },
 ];
 
@@ -59,6 +61,7 @@ const SHIPMENT_PERMISSION_TEMPLATES = [
   { key: 'shipment.tab.bl_details.clearing_advance.approve_fas_manager', resource: 'shipment', screen: 'shipment_tracker', tab: 'bl_details', type: 'action', action: 'clearing_advance_approve_fas_manager', label: 'Approve Clearing Advance (FAS Manager)', sortOrder: 131.22 },
   { key: 'shipment.tab.bl_details.storage_allocations.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'bl_details', type: 'action', action: 'storage_allocations_view', label: 'View Storage Allocations', sortOrder: 131.3 },
   { key: 'shipment.tab.bl_details.storage_allocations.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'bl_details', type: 'action', action: 'storage_allocations_edit', label: 'Edit Storage Allocations', sortOrder: 131.4 },
+  { key: 'shipment.tab.bl_details.storage_allocations.approve_warehouse_manager', resource: 'shipment', screen: 'shipment_tracker', tab: 'bl_details', type: 'action', action: 'storage_allocations_approve_warehouse_manager', label: 'Approve Storage Allocations (Warehouse Manager)', sortOrder: 131.41 },
   { key: 'shipment.tab.bl_details.packaging_list.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'bl_details', type: 'action', action: 'packaging_list_view', label: 'View Packaging List', sortOrder: 131.5 },
   { key: 'shipment.tab.bl_details.packaging_list.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'bl_details', type: 'action', action: 'packaging_list_edit', label: 'Edit Packaging List', sortOrder: 131.6 },
   // Fields
@@ -68,9 +71,21 @@ const SHIPMENT_PERMISSION_TEMPLATES = [
   { key: 'shipment.tab.document_tracker.view',    resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'tab',    label: 'View Document Tracker', sortOrder: 140 },
   { key: 'shipment.tab.document_tracker.edit',    resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'edit',             label: 'Edit Document Tracker',      sortOrder: 141 },
   { key: 'shipment.tab.document_tracker.preview', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'preview_document', label: 'Preview Shipment Documents', sortOrder: 142 },
+  { key: 'shipment.tab.document_tracker.milestone_1.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_1_view', label: 'View Document Tracker Milestone 1', sortOrder: 142.1 },
+  { key: 'shipment.tab.document_tracker.milestone_1.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_1_edit', label: 'Edit Document Tracker Milestone 1', sortOrder: 142.2 },
+  { key: 'shipment.tab.document_tracker.milestone_2.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_2_view', label: 'View Document Tracker Milestone 2', sortOrder: 142.3 },
+  { key: 'shipment.tab.document_tracker.milestone_2.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_2_edit', label: 'Edit Document Tracker Milestone 2', sortOrder: 142.4 },
+  { key: 'shipment.tab.document_tracker.milestone_3.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_3_view', label: 'View Document Tracker Milestone 3', sortOrder: 142.5 },
+  { key: 'shipment.tab.document_tracker.milestone_3.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_3_edit', label: 'Edit Document Tracker Milestone 3', sortOrder: 142.6 },
+  { key: 'shipment.tab.document_tracker.milestone_4.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_4_view', label: 'View Document Tracker Milestone 4', sortOrder: 142.7 },
+  { key: 'shipment.tab.document_tracker.milestone_4.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_4_edit', label: 'Edit Document Tracker Milestone 4', sortOrder: 142.8 },
+  { key: 'shipment.tab.document_tracker.milestone_5.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_5_view', label: 'View Document Tracker Milestone 5', sortOrder: 142.9 },
+  { key: 'shipment.tab.document_tracker.milestone_5.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_5_edit', label: 'Edit Document Tracker Milestone 5', sortOrder: 143.0 },
+  { key: 'shipment.tab.document_tracker.milestone_6.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_6_view', label: 'View Document Tracker Milestone 6', sortOrder: 143.1 },
+  { key: 'shipment.tab.document_tracker.milestone_6.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_6_edit', label: 'Edit Document Tracker Milestone 6', sortOrder: 143.2 },
   // POINT 9: Milestone-level permissions — Purchase (M1, M2) and FAS (M3–M6)
-  { key: 'shipment.milestone.purchase.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_purchase_edit', label: 'Edit Purchase Milestones (M1, M2)', sortOrder: 143 },
-  { key: 'shipment.milestone.fas.edit',      resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_fas_edit',      label: 'Edit FAS Milestones (M3–M6)',      sortOrder: 144 },
+  { key: 'shipment.milestone.purchase.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_purchase_edit', label: 'Edit Purchase Milestones (M1, M2)', sortOrder: 143.3 },
+  { key: 'shipment.milestone.fas.edit',      resource: 'shipment', screen: 'shipment_tracker', tab: 'document_tracker', type: 'action', action: 'milestone_fas_edit',      label: 'Edit FAS Milestones (M3–M6)',      sortOrder: 143.4 },
 
   // ─── Port & Customs Tab ───────────────────────────────────────────────────
   { key: 'shipment.tab.port_customs.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'port_customs', type: 'tab',    label: 'View Port & Customs', sortOrder: 150 },
@@ -99,6 +114,7 @@ const SHIPMENT_PERMISSION_TEMPLATES = [
   // Sub-tab: Storage Arrival
   { key: 'shipment.tab.storage.storage_arrival.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'storage', type: 'action', action: 'storage_arrival_view', label: 'View Storage Arrival', sortOrder: 163 },
   { key: 'shipment.tab.storage.storage_arrival.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'storage', type: 'action', action: 'storage_arrival_edit', label: 'Edit Storage Arrival', sortOrder: 164 },
+  { key: 'shipment.tab.storage.storage_arrival.approve_warehouse_manager', resource: 'shipment', screen: 'shipment_tracker', tab: 'storage', type: 'action', action: 'storage_arrival_approve_warehouse_manager', label: 'Approve Storage Arrival (Warehouse Manager)', sortOrder: 164.1 },
 
   // ─── Quality Tab ──────────────────────────────────────────────────────────
   { key: 'shipment.tab.quality.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'quality', type: 'tab',    label: 'View Quality', sortOrder: 170 },
@@ -176,6 +192,17 @@ const DEFAULT_ROLE_PERMISSION_MAP = {
     'shipment.tab.bl_details.storage_allocations.edit',
     'shipment.tab.bl_details.packaging_list.view',
     'shipment.tab.bl_details.packaging_list.edit',
+    'shipment.tab.document_tracker.view',
+    'shipment.tab.document_tracker.edit',
+    'shipment.tab.document_tracker.preview',
+    'shipment.tab.document_tracker.milestone_1.view',
+    'shipment.tab.document_tracker.milestone_1.edit',
+    'shipment.tab.document_tracker.milestone_2.view',
+    'shipment.tab.document_tracker.milestone_2.edit',
+    'shipment.tab.document_tracker.milestone_3.view',
+    'shipment.tab.document_tracker.milestone_4.view',
+    'shipment.tab.document_tracker.milestone_5.view',
+    'shipment.tab.document_tracker.milestone_6.view',
     'shipment.tab.quality.view',
     'shipment.tab.quality.edit',
     'shipment.action.reports.view',
@@ -222,6 +249,16 @@ const DEFAULT_ROLE_PERMISSION_MAP = {
     'shipment.tab.document_tracker.view',
     'shipment.tab.document_tracker.edit',
     'shipment.tab.document_tracker.preview',
+    'shipment.tab.document_tracker.milestone_1.view',
+    'shipment.tab.document_tracker.milestone_2.view',
+    'shipment.tab.document_tracker.milestone_3.view',
+    'shipment.tab.document_tracker.milestone_3.edit',
+    'shipment.tab.document_tracker.milestone_4.view',
+    'shipment.tab.document_tracker.milestone_4.edit',
+    'shipment.tab.document_tracker.milestone_5.view',
+    'shipment.tab.document_tracker.milestone_5.edit',
+    'shipment.tab.document_tracker.milestone_6.view',
+    'shipment.tab.document_tracker.milestone_6.edit',
     'shipment.tab.payment_costing.view',
     'shipment.tab.payment_costing.payment_allocation.view',
     'shipment.tab.payment_costing.payment_allocation.edit',
@@ -253,6 +290,21 @@ const DEFAULT_ROLE_PERMISSION_MAP = {
     'shipment.tab.payment_costing.packaging_expenses.view',
     'shipment.action.reports.view',
   ],
+  warehouse: [
+    'menu.dashboard.view',
+    'menu.shipments.view',
+    'menu.reports.view',
+    'menu.settings.view',
+    'shipment.screen.shipment_tracker.view',
+    'shipment.tab.bl_details.view',
+    'shipment.tab.bl_details.storage_allocations.view',
+    'shipment.tab.bl_details.storage_allocations.approve_warehouse_manager',
+    'shipment.tab.storage.view',
+    'shipment.tab.storage.storage_allocation.view',
+    'shipment.tab.storage.storage_arrival.view',
+    'shipment.tab.storage.storage_arrival.approve_warehouse_manager',
+    'shipment.action.reports.view',
+  ],
 };
 
 async function ensureRolesSeeded() {
@@ -262,13 +314,20 @@ async function ensureRolesSeeded() {
       {
         $setOnInsert: { key: role.key },
         $set: {
-          name: role.name,
-          description: role.description,
           isSystem: role.isSystem,
         },
       },
       { upsert: true }
     );
+  }
+
+  const legacyWarehouseRole = await Role.findOne({ key: 'WarehouseManager', isSystem: true });
+  if (legacyWarehouseRole) {
+    const hasLinkedUsers = await User.exists({ role: 'WarehouseManager' });
+    if (!hasLinkedUsers) {
+      await RolePermission.deleteMany({ roleKey: 'WarehouseManager' });
+      await Role.deleteOne({ _id: legacyWarehouseRole._id });
+    }
   }
 }
 
