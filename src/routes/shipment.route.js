@@ -79,11 +79,11 @@ router.post(
   controller.extractBillNo
 );
 
-// Extract arrival notice — Logistics team only
+// Extract arrival notice — permission-driven access
 router.post(
   '/extract-arrival-notice',
   authMiddleware,
-  authorize(['Logistic', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.single('file')(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -127,11 +127,18 @@ router.patch(
   controller.updateBLDetails
 );
 
-// FAS document tracker — FAS team only
+router.patch(
+  '/container/bl-details/:id/clearing-advance/approve',
+  authMiddleware,
+  authorize({ tag: 'any-active' }),
+  controller.approveClearingAdvance
+);
+
+// Document tracker payment endpoints — permission-driven access
 router.patch(
   '/container/payment/:id',
   authMiddleware,
-  authorize(['FAS', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.fields([
       { name: 'inwardCollectionAdviceDocument', maxCount: 1 },
@@ -145,11 +152,11 @@ router.patch(
   controller.updateFASContainer
 );
 
-// Logistics details — Logistics team only
+// Logistics details — permission-driven access
 router.patch(
   '/container/logistic/:id',
   authMiddleware,
-  authorize(['Logistic', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.fields([
       { name: 'arrivalNoticeDocument', maxCount: 1 },
@@ -166,17 +173,17 @@ router.patch(
   controller.updateLogisticsDetails
 );
 
-// Clearance payment — FAS team only
-router.patch('/container/clearence-payment/:id', authMiddleware, authorize(['FAS', 'Admin']), controller.addContainerPayment);
+// Clearance payment — permission-driven access
+router.patch('/container/clearence-payment/:id', authMiddleware, authorize({ tag: 'any-active' }), controller.addContainerPayment);
 
-// Clearance final — Logistics team only
-router.patch('/container/clearance/:id', authMiddleware, authorize(['Logistic', 'Admin']), controller.clearContainer);
+// Clearance final — permission-driven access
+router.patch('/container/clearance/:id', authMiddleware, authorize({ tag: 'any-active' }), controller.clearContainer);
 
-// Storage — Logistics team only
+// Storage — permission-driven access
 router.patch(
   '/container/storage/:id',
   authMiddleware,
-  authorize(['Logistic', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.any()(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -189,7 +196,7 @@ router.patch(
 router.patch(
   '/container/storage-row/:id/:rowIndex',
   authMiddleware,
-  authorize(['Logistic', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.any()(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -213,11 +220,11 @@ router.patch(
   controller.updateQualityDetails
 );
 
-// Payment costing — FAS team only
+// Payment costing — permission-driven access
 router.patch(
   '/container/payment-costing/:id',
   authMiddleware,
-  authorize(['FAS', 'Admin']),
+  authorize({ tag: 'any-active' }),
   (req, res, next) => {
     upload.any()(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
@@ -225,6 +232,13 @@ router.patch(
     });
   },
   controller.updatePaymentCostingDetails
+);
+
+router.patch(
+  '/container/payment-costing/:id/approve',
+  authMiddleware,
+  authorize({ tag: 'any-active' }),
+  controller.approvePaymentCosting
 );
 
 // GRN — Purchase team only

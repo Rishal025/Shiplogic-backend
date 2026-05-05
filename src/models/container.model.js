@@ -1,6 +1,32 @@
 const mongoose = require('mongoose');
 const { type } = require('os');
 
+const approvalStateSchema = new mongoose.Schema({
+  status: {
+    type: String,
+    enum: ['draft', 'pending_fas', 'pending_fas_manager', 'approved'],
+    default: 'draft',
+  },
+  submittedAt: { type: Date, default: null },
+  submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  fasApprovedAt: { type: Date, default: null },
+  fasApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  fasManagerApprovedAt: { type: Date, default: null },
+  fasManagerApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+}, { _id: false });
+
+const paymentCostingApprovalStateSchema = new mongoose.Schema({
+  status: {
+    type: String,
+    enum: ['draft', 'pending_fas_manager', 'approved'],
+    default: 'draft',
+  },
+  submittedAt: { type: Date, default: null },
+  submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  fasManagerApprovedAt: { type: Date, default: null },
+  fasManagerApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+}, { _id: false });
+
 const actualContainerSchema = new mongoose.Schema({
   actualSerialNo: { type: String },
   commercialInvoiceNo: { type: String },
@@ -164,6 +190,18 @@ const actualContainerSchema = new mongoose.Schema({
     // POINT 5: paidAmount removed, replaced with remarks
     remarks: { type: String, default: '' }
   }],
+  clearingAdvanceApproval: {
+    type: approvalStateSchema,
+    default: () => ({
+      status: 'draft',
+      submittedAt: null,
+      submittedBy: null,
+      fasApprovedAt: null,
+      fasApprovedBy: null,
+      fasManagerApprovedAt: null,
+      fasManagerApprovedBy: null,
+    }),
+  },
   storageAllocations: [{
     sn: { type: Number },
     containerSerialNo: { type: String },
@@ -251,6 +289,16 @@ const actualContainerSchema = new mongoose.Schema({
     refBillDocumentUrl: { type: String },
     refBillDocumentName: { type: String }
   }],
+  paymentCostingApproval: {
+    type: paymentCostingApprovalStateSchema,
+    default: () => ({
+      status: 'draft',
+      submittedAt: null,
+      submittedBy: null,
+      fasManagerApprovedAt: null,
+      fasManagerApprovedBy: null,
+    }),
+  },
   packagingExpenses: [{
     sn: { type: Number },
     item: { type: String },

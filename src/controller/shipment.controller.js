@@ -10,6 +10,7 @@ const { uploadBufferToS3, createSignedGetUrl } = require('../core/utils/s3Upload
 const { calculateSupplierOnboardingState } = require('../core/utils/supplierOnboarding');
 const { sendSupplierInviteEmail, sendWorkflowUpdateEmail } = require('../services/mail.service');
 const { normalizeRole } = require('../core/utils/roleHelpers');
+const { permissionService } = require('../core/services/permissionService');
 const mongoose = require('mongoose');
 const XLSX = require('xlsx');
 const PDFDocument = require('pdfkit');
@@ -50,6 +51,12 @@ const toSignedDocument = async (url, name, expiresIn = 900) => {
   if (!url) return { url: null, name: name || null };
   const signedUrl = await createSignedGetUrl(url, expiresIn).catch(() => url);
   return { url: signedUrl, name: name || null };
+};
+
+const fireAndForgetWorkflowEmail = (payload) => {
+  notifyWorkflowRoleByEmail(payload).catch((error) => {
+    console.error(`Workflow email warning for ${payload?.sectionLabel || 'shipment update'}:`, error.message);
+  });
 };
 
 const toPlainObject = (value) => {
@@ -126,12 +133,85 @@ const WORKFLOW_NOTIFICATION_ROLE_MAP = {
   paymentCosting: 'Purchase',
 };
 
+const CLEARING_ADVANCE_APPROVAL_STATUSES = {
+  draft: 'draft',
+  pendingFas: 'pending_fas',
+  pendingFasManager: 'pending_fas_manager',
+  approved: 'approved',
+};
+
+const PAYMENT_COSTING_APPROVAL_STATUSES = {
+  draft: 'draft',
+  pendingFasManager: 'pending_fas_manager',
+  approved: 'approved',
+};
+
+const cloneForAudit = (value) => JSON.parse(JSON.stringify(value || {}));
+
+const buildClearingAdvancePendingApproval = (user) => ({
+  status: CLEARING_ADVANCE_APPROVAL_STATUSES.pendingFas,
+  submittedAt: new Date(),
+  submittedBy: user?._id || null,
+  fasApprovedAt: null,
+  fasApprovedBy: null,
+  fasManagerApprovedAt: null,
+  fasManagerApprovedBy: null,
+});
+
+const buildPaymentCostingPendingApproval = (user) => ({
+  status: PAYMENT_COSTING_APPROVAL_STATUSES.pendingFasManager,
+  submittedAt: new Date(),
+  submittedBy: user?._id || null,
+  fasManagerApprovedAt: null,
+  fasManagerApprovedBy: null,
+});
+
+const hasSavedClearingAdvanceData = (container) => {
+  const rows = container?.actual?.costSheetBookings || [];
+  return Array.isArray(rows) && rows.some((row) =>
+    Number(row?.requestAmount || 0) > 0 || String(row?.remarks || '').trim().length > 0
+  );
+};
+
+const hasSavedPaymentCostingData = (container) => {
+  const rows = container?.actual?.paymentCostings || [];
+  return Array.isArray(rows) && rows.some((row) =>
+    String(row?.refBillNo || '').trim().length > 0 ||
+    String(row?.refBillVendor || '').trim().length > 0 ||
+    !!row?.refBillDate
+  );
+};
+
+const getApprovalActorName = (user) => user?.name || user?.email || 'A user';
+
+const getContainerSerialNo = (container) =>
+  container?.actual?.containerSerialNo ||
+  container?.planned?.containerSerialNo ||
+  container?.containerSerialNo ||
+  container?._id?.toString?.() ||
+  'N/A';
+
+const requirePermission = async (user, permissionKey) => {
+  if (!user) return false;
+  return permissionService.hasPermission(user, permissionKey);
+};
+
+const hasRoleOrPermission = async (user, permissionKey, allowedRoles = []) => {
+  if (!user) return false;
+  const normalizedRole = normalizeRole(user.role);
+  if (allowedRoles.includes(normalizedRole)) {
+    return true;
+  }
+  return requirePermission(user, permissionKey);
+};
+
 const notifyWorkflowRoleByEmail = async ({
   role,
   shipment,
   container,
   sectionLabel,
   actor,
+  approvalStage,
 }) => {
   const normalizedRole = normalizeRole(role);
   if (!normalizedRole) return;
@@ -150,11 +230,7 @@ const notifyWorkflowRoleByEmail = async ({
     const actorName = actor?.name || actor?.email || 'A user';
     const shipmentNo = shipment?.shipmentNo || 'N/A';
     const containerSerialNo =
-      container?.actual?.containerSerialNo ||
-      container?.planned?.containerSerialNo ||
-      container?.containerSerialNo ||
-      container?._id?.toString?.() ||
-      'N/A';
+      getContainerSerialNo(container);
 
     const uniqueRecipients = recipients.filter((recipient, index, list) => {
       const email = String(recipient.email || '').trim().toLowerCase();
@@ -171,6 +247,7 @@ const notifyWorkflowRoleByEmail = async ({
           sectionLabel,
           updatedBy: actorName,
           nextRole: normalizedRole,
+          approvalStage,
         })
       )
     );
@@ -1129,6 +1206,7 @@ exports.updateBLDetails = async (req, res) => {
         bags: container.planned?.bags || 0
       };
     }
+    const beforeUpdate = cloneForAudit(container.toObject());
 
     const files = req.files || {};
     const costSheetBookingDocument = files?.costSheetBookingDocument?.[0];
@@ -1159,6 +1237,7 @@ exports.updateBLDetails = async (req, res) => {
     const parsedCostSheetBookings = parseJsonField(costSheetBookings);
     const parsedStorageAllocations = parseJsonField(storageAllocations);
     const parsedPackagingList = parseJsonField(packagingList);
+    const isClearingAdvanceSave = Array.isArray(parsedCostSheetBookings) || !!costSheetBookingDocument;
 
     if (parsedPackagingList) {
       container.actual.packagingList = {
@@ -1219,6 +1298,10 @@ exports.updateBLDetails = async (req, res) => {
       container.actual.costSheetBookingDocumentName = uploaded.fileName;
     }
 
+    if (isClearingAdvanceSave) {
+      container.actual.clearingAdvanceApproval = buildClearingAdvancePendingApproval(req.user);
+    }
+
     await container.save();
 
     // Advance shipment stage to B/L Details
@@ -1226,12 +1309,36 @@ exports.updateBLDetails = async (req, res) => {
     if (shipmentForBL) {
       advanceShipmentStage(shipmentForBL, 'B/L Details');
       await shipmentForBL.save();
-      await notifyWorkflowRoleByEmail({
-        role: WORKFLOW_NOTIFICATION_ROLE_MAP.blDetails,
-        shipment: shipmentForBL,
-        container,
-        sectionLabel: 'B/L Details',
-        actor: req.user,
+      if (isClearingAdvanceSave) {
+        fireAndForgetWorkflowEmail({
+          role: 'FAS',
+          shipment: shipmentForBL,
+          container,
+          sectionLabel: 'Clearing Advance',
+          actor: req.user,
+          approvalStage: 'Pending FAS Approval',
+        });
+      } else {
+        fireAndForgetWorkflowEmail({
+          role: WORKFLOW_NOTIFICATION_ROLE_MAP.blDetails,
+          shipment: shipmentForBL,
+          container,
+          sectionLabel: 'B/L Details',
+          actor: req.user,
+        });
+      }
+    }
+
+    if (isClearingAdvanceSave) {
+      await logAudit({
+        userId: req.user._id,
+        module: 'Logistics',
+        entity: 'Container',
+        entityId: container._id,
+        action: 'SubmitClearingAdvance',
+        before: beforeUpdate,
+        after: cloneForAudit(container.toObject()),
+        remarks: 'Clearing advance submitted for FAS approval'
       });
     }
 
@@ -1322,7 +1429,7 @@ exports.updateFASContainer = async (req, res) => {
     if (shipmentForDoc) {
       advanceShipmentStage(shipmentForDoc, 'Documentation');
       await shipmentForDoc.save();
-      await notifyWorkflowRoleByEmail({
+      fireAndForgetWorkflowEmail({
         role: WORKFLOW_NOTIFICATION_ROLE_MAP.documentation,
         shipment: shipmentForDoc,
         container,
@@ -1550,7 +1657,7 @@ exports.updateLogisticsDetails = async (req, res) => {
       console.log('📈 [Logistics] Advancing shipment stage to "Port & Customs"');
       advanceShipmentStage(shipmentForLogistics, 'Port & Customs');
       await shipmentForLogistics.save();
-      await notifyWorkflowRoleByEmail({
+      fireAndForgetWorkflowEmail({
         role: WORKFLOW_NOTIFICATION_ROLE_MAP.logistics,
         shipment: shipmentForLogistics,
         container,
@@ -1795,7 +1902,7 @@ exports.updateStorageDetails = async (req, res) => {
     if (shipmentForStorage) {
       advanceShipmentStage(shipmentForStorage, 'Storage');
       await shipmentForStorage.save();
-      await notifyWorkflowRoleByEmail({
+      fireAndForgetWorkflowEmail({
         role: WORKFLOW_NOTIFICATION_ROLE_MAP.storage,
         shipment: shipmentForStorage,
         container,
@@ -1870,7 +1977,7 @@ exports.updateStorageArrivalRow = async (req, res) => {
     await container.save();
     const shipmentForStorageArrival = await Shipment.findById(container.shipmentId);
     if (shipmentForStorageArrival) {
-      await notifyWorkflowRoleByEmail({
+      fireAndForgetWorkflowEmail({
         role: WORKFLOW_NOTIFICATION_ROLE_MAP.storage,
         shipment: shipmentForStorageArrival,
         container,
@@ -1960,7 +2067,7 @@ exports.updateQualityDetails = async (req, res) => {
     if (shipmentForQuality) {
       advanceShipmentStage(shipmentForQuality, 'Quality');
       await shipmentForQuality.save();
-      await notifyWorkflowRoleByEmail({
+      fireAndForgetWorkflowEmail({
         role: WORKFLOW_NOTIFICATION_ROLE_MAP.quality,
         shipment: shipmentForQuality,
         container,
@@ -1981,12 +2088,18 @@ exports.updatePaymentCostingDetails = async (req, res) => {
     const container = await Container.findById(req.params.id);
     if (!container) return res.status(404).json({ message: 'Container not found' });
     if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
+    const beforeUpdate = cloneForAudit(container.toObject());
 
     const files = normalizeUploadedFiles(req.files);
     const { paymentAllocations, paymentCostings, packagingExpenses } = req.body;
     const parsedAllocations = parseJsonField(paymentAllocations);
     const parsedCostings = parseJsonField(paymentCostings);
     const parsedPackagingExpenses = parseJsonField(packagingExpenses);
+    const overallDoc = files?.paymentCostingDocument?.[0];
+    const isPaymentCostingSave =
+      Array.isArray(parsedCostings) ||
+      Array.isArray(parsedPackagingExpenses) ||
+      !!overallDoc;
 
     const uploadedByField = {};
     for (const [field, list] of Object.entries(files)) {
@@ -2044,11 +2157,14 @@ exports.updatePaymentCostingDetails = async (req, res) => {
       }));
     }
 
-    const overallDoc = files?.paymentCostingDocument?.[0];
     if (overallDoc) {
       const uploaded = await uploadBufferToS3(overallDoc, 'shipments/payment-costing/overall');
       container.actual.paymentCostingDocumentUrl = uploaded.url;
       container.actual.paymentCostingDocumentName = uploaded.fileName;
+    }
+
+    if (isPaymentCostingSave) {
+      container.actual.paymentCostingApproval = buildPaymentCostingPendingApproval(req.user);
     }
 
     await container.save();
@@ -2058,12 +2174,28 @@ exports.updatePaymentCostingDetails = async (req, res) => {
     if (shipmentForPayment) {
       advanceShipmentStage(shipmentForPayment, 'Payment Costing');
       await shipmentForPayment.save();
-      await notifyWorkflowRoleByEmail({
-        role: WORKFLOW_NOTIFICATION_ROLE_MAP.paymentCosting,
-        shipment: shipmentForPayment,
-        container,
-        sectionLabel: 'Payment Costing',
-        actor: req.user,
+      if (isPaymentCostingSave) {
+        fireAndForgetWorkflowEmail({
+          role: 'FasManager',
+          shipment: shipmentForPayment,
+          container,
+          sectionLabel: 'Payment Costing',
+          actor: req.user,
+          approvalStage: 'Pending FAS Manager Approval',
+        });
+      }
+    }
+
+    if (isPaymentCostingSave) {
+      await logAudit({
+        userId: req.user._id,
+        module: 'FAS',
+        entity: 'Container',
+        entityId: container._id,
+        action: 'SubmitPaymentCosting',
+        before: beforeUpdate,
+        after: cloneForAudit(container.toObject()),
+        remarks: 'Payment costing submitted for FAS manager approval'
       });
     }
 
@@ -2071,6 +2203,165 @@ exports.updatePaymentCostingDetails = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: err.message });
+  }
+};
+
+exports.approveClearingAdvance = async (req, res) => {
+  try {
+    const container = await Container.findById(req.params.id);
+    if (!container) return res.status(404).json({ message: 'Container not found' });
+    if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
+
+    const beforeUpdate = cloneForAudit(container.toObject());
+    const currentState = container.actual.clearingAdvanceApproval || { status: CLEARING_ADVANCE_APPROVAL_STATUSES.draft };
+    const effectiveStatus =
+      currentState.status === CLEARING_ADVANCE_APPROVAL_STATUSES.draft && hasSavedClearingAdvanceData(container)
+        ? CLEARING_ADVANCE_APPROVAL_STATUSES.pendingFas
+        : currentState.status;
+    const shipment = await Shipment.findById(container.shipmentId);
+
+    if (effectiveStatus === CLEARING_ADVANCE_APPROVAL_STATUSES.pendingFas) {
+      const allowed = await hasRoleOrPermission(
+        req.user,
+        'shipment.tab.bl_details.clearing_advance.approve_fas',
+        ['FAS', 'Admin', 'Manager', 'Management']
+      );
+      if (!allowed) {
+        return res.status(403).json({ message: 'You do not have permission to approve clearing advance as FAS.' });
+      }
+
+      container.actual.clearingAdvanceApproval = {
+        ...currentState,
+        status: CLEARING_ADVANCE_APPROVAL_STATUSES.pendingFasManager,
+        submittedAt: currentState.submittedAt || new Date(),
+        submittedBy: currentState.submittedBy || null,
+        fasApprovedAt: new Date(),
+        fasApprovedBy: req.user._id,
+      };
+      await container.save();
+
+      if (shipment) {
+        fireAndForgetWorkflowEmail({
+          role: 'FasManager',
+          shipment,
+          container,
+          sectionLabel: 'Clearing Advance',
+          actor: req.user,
+          approvalStage: 'Pending FAS Manager Approval',
+        });
+      }
+
+      await logAudit({
+        userId: req.user._id,
+        module: 'FAS',
+        entity: 'Container',
+        entityId: container._id,
+        action: 'ApproveClearingAdvanceFAS',
+        before: beforeUpdate,
+        after: cloneForAudit(container.toObject()),
+        remarks: 'Clearing advance approved by FAS'
+      });
+
+      return res.json({ message: 'Clearing advance approved by FAS successfully', container });
+    }
+
+    if (effectiveStatus === CLEARING_ADVANCE_APPROVAL_STATUSES.pendingFasManager) {
+      const allowed = await hasRoleOrPermission(
+        req.user,
+        'shipment.tab.bl_details.clearing_advance.approve_fas_manager',
+        ['FasManager', 'Admin', 'Manager', 'Management']
+      );
+      if (!allowed) {
+        return res.status(403).json({ message: 'You do not have permission to approve clearing advance as FAS manager.' });
+      }
+
+      container.actual.clearingAdvanceApproval = {
+        ...currentState,
+        status: CLEARING_ADVANCE_APPROVAL_STATUSES.approved,
+        fasManagerApprovedAt: new Date(),
+        fasManagerApprovedBy: req.user._id,
+      };
+      await container.save();
+
+      await logAudit({
+        userId: req.user._id,
+        module: 'FAS',
+        entity: 'Container',
+        entityId: container._id,
+        action: 'ApproveClearingAdvanceFasManager',
+        before: beforeUpdate,
+        after: cloneForAudit(container.toObject()),
+        remarks: 'Clearing advance approved by FAS manager'
+      });
+
+      return res.json({ message: 'Clearing advance approved by FAS manager successfully', container });
+    }
+
+    if (effectiveStatus === CLEARING_ADVANCE_APPROVAL_STATUSES.approved) {
+      return res.status(400).json({ message: 'Clearing advance is already approved.' });
+    }
+
+    return res.status(400).json({ message: 'Clearing advance must be saved before it can be approved.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+exports.approvePaymentCosting = async (req, res) => {
+  try {
+    const container = await Container.findById(req.params.id);
+    if (!container) return res.status(404).json({ message: 'Container not found' });
+    if (!container.actual) return res.status(400).json({ message: 'Actual not created yet' });
+
+    const beforeUpdate = cloneForAudit(container.toObject());
+    const currentState = container.actual.paymentCostingApproval || { status: PAYMENT_COSTING_APPROVAL_STATUSES.draft };
+    const effectiveStatus =
+      currentState.status === PAYMENT_COSTING_APPROVAL_STATUSES.draft && hasSavedPaymentCostingData(container)
+        ? PAYMENT_COSTING_APPROVAL_STATUSES.pendingFasManager
+        : currentState.status;
+
+    if (effectiveStatus !== PAYMENT_COSTING_APPROVAL_STATUSES.pendingFasManager) {
+      if (effectiveStatus === PAYMENT_COSTING_APPROVAL_STATUSES.approved) {
+        return res.status(400).json({ message: 'Payment costing is already approved.' });
+      }
+      return res.status(400).json({ message: 'Payment costing must be saved before it can be approved.' });
+    }
+
+    const allowed = await hasRoleOrPermission(
+      req.user,
+      'shipment.tab.payment_costing.costing_table.approve_fas_manager',
+      ['FasManager', 'Admin', 'Manager', 'Management']
+    );
+    if (!allowed) {
+      return res.status(403).json({ message: 'You do not have permission to approve payment costing.' });
+    }
+
+    container.actual.paymentCostingApproval = {
+      ...currentState,
+      status: PAYMENT_COSTING_APPROVAL_STATUSES.approved,
+      submittedAt: currentState.submittedAt || new Date(),
+      submittedBy: currentState.submittedBy || null,
+      fasManagerApprovedAt: new Date(),
+      fasManagerApprovedBy: req.user._id,
+    };
+    await container.save();
+
+    await logAudit({
+      userId: req.user._id,
+      module: 'FAS',
+      entity: 'Container',
+      entityId: container._id,
+      action: 'ApprovePaymentCostingFasManager',
+      before: beforeUpdate,
+      after: cloneForAudit(container.toObject()),
+      remarks: 'Payment costing approved by FAS manager'
+    });
+
+    return res.json({ message: 'Payment costing approved successfully', container });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
@@ -2678,6 +2969,7 @@ exports.getShipmentById = async (req, res) => {
             costSheetBookingDocumentUrl: a.costSheetBookingDocumentUrl,
             costSheetBookingDocumentName: a.costSheetBookingDocumentName,
             costSheetBookings: a.costSheetBookings || [],
+            clearingAdvanceApproval: a.clearingAdvanceApproval || null,
             storageAllocations: a.storageAllocations || [],
             maximumRetentionDate: a.maximumRetentionDate,
             DHL: a.DHL,
@@ -2752,6 +3044,7 @@ exports.getShipmentById = async (req, res) => {
             qualityReports: a.qualityReports || [],
             paymentAllocations: a.paymentAllocations || [],
             paymentCostings: a.paymentCostings || [],
+            paymentCostingApproval: a.paymentCostingApproval || null,
             packagingExpenses: a.packagingExpenses || [],
             paymentCostingDocumentUrl: a.paymentCostingDocumentUrl,
             paymentCostingDocumentName: a.paymentCostingDocumentName,
@@ -2773,122 +3066,135 @@ exports.getShipmentById = async (req, res) => {
       }
     });
 
-    for (const row of actual) {
-      const signedStep3Doc = await toSignedDocument(row.costSheetBookingDocumentUrl, row.costSheetBookingDocumentName);
+    await Promise.all(actual.map(async (row) => {
+      const [
+        signedStep3Doc,
+        signedBlDocument,
+        signedPkgDocument,
+        signedInwardAdvice,
+        signedMurabaha,
+        signedReleased,
+        signedArrivalNotice,
+        signedAdvance,
+        signedDoReleased,
+        signedDpApproval,
+        signedCustoms,
+        signedMunicipality,
+        signedPaymentCosting,
+        signedStorageDocument,
+      ] = await Promise.all([
+        toSignedDocument(row.costSheetBookingDocumentUrl, row.costSheetBookingDocumentName),
+        toSignedDocument(row.blDocumentUrl, row.blDocumentName),
+        toSignedDocument(row.packagingListDocumentUrl, row.packagingListDocumentName),
+        toSignedDocument(row.inwardCollectionAdviceDocumentUrl, row.inwardCollectionAdviceDocumentName),
+        toSignedDocument(row.murabahaContractSubmittedDocumentUrl, row.murabahaContractSubmittedDocumentName),
+        toSignedDocument(row.documentsReleasedDocumentUrl, row.documentsReleasedDocumentName),
+        toSignedDocument(row.arrivalNoticeDocumentUrl, row.arrivalNoticeDocumentName),
+        toSignedDocument(row.advanceRequestDocumentUrl, row.advanceRequestDocumentName),
+        toSignedDocument(row.doReleasedDocumentUrl, row.doReleasedDocumentName),
+        toSignedDocument(row.dpApprovalDocumentUrl, row.dpApprovalDocumentName),
+        toSignedDocument(row.customsClearanceDocumentUrl, row.customsClearanceDocumentName),
+        toSignedDocument(row.municipalityDocumentUrl, row.municipalityDocumentName),
+        toSignedDocument(row.paymentCostingDocumentUrl, row.paymentCostingDocumentName),
+        toSignedDocument(row.storageDocumentUrl, row.storageDocumentName),
+      ]);
+
       row.costSheetBookingDocumentUrl = signedStep3Doc.url;
       row.costSheetBookingDocumentName = signedStep3Doc.name;
-
-      const signedBlDocument = await toSignedDocument(row.blDocumentUrl, row.blDocumentName);
       row.blDocumentUrl = signedBlDocument.url;
       row.blDocumentName = signedBlDocument.name;
-
-      const signedPkgDocument = await toSignedDocument(row.packagingListDocumentUrl, row.packagingListDocumentName);
       row.packagingListDocumentUrl = signedPkgDocument.url;
       row.packagingListDocumentName = signedPkgDocument.name;
-
-      const signedInwardAdvice = await toSignedDocument(row.inwardCollectionAdviceDocumentUrl, row.inwardCollectionAdviceDocumentName);
       row.inwardCollectionAdviceDocumentUrl = signedInwardAdvice.url;
       row.inwardCollectionAdviceDocumentName = signedInwardAdvice.name;
-
-      const signedMurabaha = await toSignedDocument(row.murabahaContractSubmittedDocumentUrl, row.murabahaContractSubmittedDocumentName);
       row.murabahaContractSubmittedDocumentUrl = signedMurabaha.url;
       row.murabahaContractSubmittedDocumentName = signedMurabaha.name;
-
-      const signedReleased = await toSignedDocument(row.documentsReleasedDocumentUrl, row.documentsReleasedDocumentName);
       row.documentsReleasedDocumentUrl = signedReleased.url;
       row.documentsReleasedDocumentName = signedReleased.name;
-
-      const signedArrivalNotice = await toSignedDocument(row.arrivalNoticeDocumentUrl, row.arrivalNoticeDocumentName);
       row.arrivalNoticeDocumentUrl = signedArrivalNotice.url;
       row.arrivalNoticeDocumentName = signedArrivalNotice.name;
-
-      const signedAdvance = await toSignedDocument(row.advanceRequestDocumentUrl, row.advanceRequestDocumentName);
       row.advanceRequestDocumentUrl = signedAdvance.url;
       row.advanceRequestDocumentName = signedAdvance.name;
-
-      const signedDoReleased = await toSignedDocument(row.doReleasedDocumentUrl, row.doReleasedDocumentName);
       row.doReleasedDocumentUrl = signedDoReleased.url;
       row.doReleasedDocumentName = signedDoReleased.name;
-
-      const signedDpApproval = await toSignedDocument(row.dpApprovalDocumentUrl, row.dpApprovalDocumentName);
       row.dpApprovalDocumentUrl = signedDpApproval.url;
       row.dpApprovalDocumentName = signedDpApproval.name;
-
-      const signedCustoms = await toSignedDocument(row.customsClearanceDocumentUrl, row.customsClearanceDocumentName);
       row.customsClearanceDocumentUrl = signedCustoms.url;
       row.customsClearanceDocumentName = signedCustoms.name;
-
-      const signedMunicipality = await toSignedDocument(row.municipalityDocumentUrl, row.municipalityDocumentName);
       row.municipalityDocumentUrl = signedMunicipality.url;
       row.municipalityDocumentName = signedMunicipality.name;
-
-      const signedPaymentCosting = await toSignedDocument(row.paymentCostingDocumentUrl, row.paymentCostingDocumentName);
       row.paymentCostingDocumentUrl = signedPaymentCosting.url;
       row.paymentCostingDocumentName = signedPaymentCosting.name;
-
-      row.qualityRows = await Promise.all((row.qualityRows || []).map(async (qualityRow) => {
-        const plainQualityRow = toPlainObject(qualityRow);
-        const inhouse = await toSignedDocument(qualityRow.inhouseReportDocumentUrl, qualityRow.inhouseReportDocumentName);
-        const strategic = await toSignedDocument(qualityRow.strategicReportDocumentUrl, qualityRow.strategicReportDocumentName);
-        const thirdParty = await toSignedDocument(qualityRow.thirdPartyReportDocumentUrl, qualityRow.thirdPartyReportDocumentName);
-        const attachment = await toSignedDocument(qualityRow.attachmentDocumentUrl, qualityRow.attachmentDocumentName);
-        return {
-          ...plainQualityRow,
-          inhouseReportDocumentUrl: inhouse.url,
-          inhouseReportDocumentName: inhouse.name,
-          strategicReportDocumentUrl: strategic.url,
-          strategicReportDocumentName: strategic.name,
-          thirdPartyReportDocumentUrl: thirdParty.url,
-          thirdPartyReportDocumentName: thirdParty.name,
-          attachmentDocumentUrl: attachment.url,
-          attachmentDocumentName: attachment.name,
-        };
-      }));
-
-      row.qualityReports = await Promise.all((row.qualityReports || []).map(async (reportRow) => {
-        const plainReportRow = toPlainObject(reportRow);
-        const signed = await toSignedDocument(reportRow.documentUrl, reportRow.documentName);
-        return {
-          ...plainReportRow,
-          documentUrl: signed.url,
-          documentName: signed.name,
-        };
-      }));
-
-      row.paymentCostings = await Promise.all((row.paymentCostings || []).map(async (costingRow) => {
-        const plainCostingRow = toPlainObject(costingRow);
-        const signed = await toSignedDocument(costingRow.refBillDocumentUrl, costingRow.refBillDocumentName);
-        return {
-          ...plainCostingRow,
-          refBillDocumentUrl: signed.url,
-          refBillDocumentName: signed.name,
-        };
-      }));
-
-      row.storageSplits = await Promise.all((row.storageSplits || []).map(async (storageRow) => {
-        const plainStorageRow = toPlainObject(storageRow);
-        const signed = await toSignedDocument(storageRow.documentUrl, storageRow.documentName);
-        return {
-          ...plainStorageRow,
-          documentUrl: signed.url,
-          documentName: signed.name,
-        };
-      }));
-
-      const signedStorageDocument = await toSignedDocument(row.storageDocumentUrl, row.storageDocumentName);
       row.storageDocumentUrl = signedStorageDocument.url;
       row.storageDocumentName = signedStorageDocument.name;
-    }
 
-    const signedLpoUrl = shipment.lpoDocumentUrl
-      ? await createSignedGetUrl(shipment.lpoDocumentUrl, 900).catch(() => shipment.lpoDocumentUrl)
-      : null;
-    const signedProformaUrl = shipment.proformaDocumentUrl
-      ? await createSignedGetUrl(shipment.proformaDocumentUrl, 900).catch(() => shipment.proformaDocumentUrl)
-      : null;
-    const signedS1QualityUrl = shipment.s1QualityReportUrl
-      ? await createSignedGetUrl(shipment.s1QualityReportUrl, 900).catch(() => shipment.s1QualityReportUrl)
-      : null;
+      const [qualityRows, qualityReports, paymentCostings, storageSplits] = await Promise.all([
+        Promise.all((row.qualityRows || []).map(async (qualityRow) => {
+          const plainQualityRow = toPlainObject(qualityRow);
+          const [inhouse, strategic, thirdParty, attachment] = await Promise.all([
+            toSignedDocument(qualityRow.inhouseReportDocumentUrl, qualityRow.inhouseReportDocumentName),
+            toSignedDocument(qualityRow.strategicReportDocumentUrl, qualityRow.strategicReportDocumentName),
+            toSignedDocument(qualityRow.thirdPartyReportDocumentUrl, qualityRow.thirdPartyReportDocumentName),
+            toSignedDocument(qualityRow.attachmentDocumentUrl, qualityRow.attachmentDocumentName),
+          ]);
+          return {
+            ...plainQualityRow,
+            inhouseReportDocumentUrl: inhouse.url,
+            inhouseReportDocumentName: inhouse.name,
+            strategicReportDocumentUrl: strategic.url,
+            strategicReportDocumentName: strategic.name,
+            thirdPartyReportDocumentUrl: thirdParty.url,
+            thirdPartyReportDocumentName: thirdParty.name,
+            attachmentDocumentUrl: attachment.url,
+            attachmentDocumentName: attachment.name,
+          };
+        })),
+        Promise.all((row.qualityReports || []).map(async (reportRow) => {
+          const plainReportRow = toPlainObject(reportRow);
+          const signed = await toSignedDocument(reportRow.documentUrl, reportRow.documentName);
+          return {
+            ...plainReportRow,
+            documentUrl: signed.url,
+            documentName: signed.name,
+          };
+        })),
+        Promise.all((row.paymentCostings || []).map(async (costingRow) => {
+          const plainCostingRow = toPlainObject(costingRow);
+          const signed = await toSignedDocument(costingRow.refBillDocumentUrl, costingRow.refBillDocumentName);
+          return {
+            ...plainCostingRow,
+            refBillDocumentUrl: signed.url,
+            refBillDocumentName: signed.name,
+          };
+        })),
+        Promise.all((row.storageSplits || []).map(async (storageRow) => {
+          const plainStorageRow = toPlainObject(storageRow);
+          const signed = await toSignedDocument(storageRow.documentUrl, storageRow.documentName);
+          return {
+            ...plainStorageRow,
+            documentUrl: signed.url,
+            documentName: signed.name,
+          };
+        })),
+      ]);
+
+      row.qualityRows = qualityRows;
+      row.qualityReports = qualityReports;
+      row.paymentCostings = paymentCostings;
+      row.storageSplits = storageSplits;
+    }));
+
+    const [signedLpoUrl, signedProformaUrl, signedS1QualityUrl] = await Promise.all([
+      shipment.lpoDocumentUrl
+        ? createSignedGetUrl(shipment.lpoDocumentUrl, 900).catch(() => shipment.lpoDocumentUrl)
+        : null,
+      shipment.proformaDocumentUrl
+        ? createSignedGetUrl(shipment.proformaDocumentUrl, 900).catch(() => shipment.proformaDocumentUrl)
+        : null,
+      shipment.s1QualityReportUrl
+        ? createSignedGetUrl(shipment.s1QualityReportUrl, 900).catch(() => shipment.s1QualityReportUrl)
+        : null,
+    ]);
 
     res.status(200).json({
       shipment: {

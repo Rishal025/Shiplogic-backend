@@ -1,5 +1,7 @@
 const ROLE_ALIASES = {
   Logistics: 'Logistic',
+  'Fas manager': 'FasManager',
+  'FAS Manager': 'FasManager',
 };
 
 function normalizeRole(role) {

@@ -109,6 +109,7 @@ async function sendWorkflowUpdateEmail({
   sectionLabel,
   updatedBy,
   nextRole,
+  approvalStage,
 }) {
   const transporter = getTransporter();
   const { from } = getMailerConfig();
@@ -119,6 +120,7 @@ async function sendWorkflowUpdateEmail({
   const safeSectionLabel = sectionLabel || 'Shipment section';
   const safeUpdatedBy = updatedBy || 'A user';
   const safeNextRole = nextRole || 'Assigned team';
+  const safeApprovalStage = approvalStage || '';
 
   await transporter.sendMail({
     from,
@@ -131,6 +133,7 @@ async function sendWorkflowUpdateEmail({
       `Shipment No: ${safeShipmentNo}`,
       `Container Serial No: ${safeContainerSerialNo}`,
       `Responsible Team: ${safeNextRole}`,
+      ...(safeApprovalStage ? [`Approval Stage: ${safeApprovalStage}`] : []),
       '',
       `You can review the latest update here: ${portalUrl}`,
     ].join('\n'),
@@ -142,6 +145,7 @@ async function sendWorkflowUpdateEmail({
           <strong>Shipment No:</strong> ${safeShipmentNo}<br/>
           <strong>Container Serial No:</strong> ${safeContainerSerialNo}<br/>
           <strong>Responsible Team:</strong> ${safeNextRole}
+          ${safeApprovalStage ? `<br/><strong>Approval Stage:</strong> ${safeApprovalStage}` : ''}
         </p>
         <p>You can review the latest update here: <a href="${portalUrl}">${portalUrl}</a></p>
       </div>

@@ -360,14 +360,18 @@ exports.updateUser = async (req, res) => {
     }
 
     const before = userResponse(user);
-    const nextRole = String(req.body.role || user.role).trim();
+    const requestedRole = String(req.body.role || user.role).trim();
+    const normalizedRequestedRole = normalizeRole(requestedRole);
 
-    if (nextRole) {
-      const roleExists = await Role.findOne({ key: nextRole, isActive: true });
+    if (requestedRole) {
+      const roleExists = await Role.findOne({
+        key: { $in: [requestedRole, normalizedRequestedRole].filter(Boolean) },
+        isActive: true,
+      });
       if (!roleExists) {
         return res.status(400).json({ message: 'Selected role is not available' });
       }
-      user.role = nextRole;
+      user.role = roleExists.key;
     }
 
     if (typeof req.body.isActive === 'boolean') {
@@ -402,13 +406,17 @@ exports.createUser = async (req, res) => {
   try {
     const name = String(req.body.name || '').trim();
     const email = String(req.body.email || '').trim().toLowerCase();
-    const role = String(req.body.role || '').trim();
+    const requestedRole = String(req.body.role || '').trim();
+    const normalizedRequestedRole = normalizeRole(requestedRole);
 
-    if (!name || !email || !role) {
+    if (!name || !email || !requestedRole) {
       return res.status(400).json({ message: 'Name, email, and role are required' });
     }
 
-    const roleExists = await Role.findOne({ key: role, isActive: true });
+    const roleExists = await Role.findOne({
+      key: { $in: [requestedRole, normalizedRequestedRole].filter(Boolean) },
+      isActive: true,
+    });
     if (!roleExists) {
       return res.status(400).json({ message: 'Selected role is not available' });
     }
@@ -423,7 +431,7 @@ exports.createUser = async (req, res) => {
       name,
       email,
       password: temporaryPassword,
-      role,
+      role: roleExists.key,
       isActive: req.body.isActive !== false,
       mustChangePassword: true,
     });
@@ -431,7 +439,7 @@ exports.createUser = async (req, res) => {
     await sendInternalUserInviteEmail({
       to: email,
       userName: name,
-      role,
+      role: roleExists.key,
       temporaryPassword,
     });
 
