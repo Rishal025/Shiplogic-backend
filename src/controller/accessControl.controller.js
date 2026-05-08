@@ -6,6 +6,14 @@ const User = require('../models/auth.model');
 const { normalizeRole } = require('../core/utils/roleHelpers');
 const { sendInternalUserInviteEmail } = require('../services/mail.service');
 const roleRegistry = require('../core/utils/roleRegistry');
+const BLRowDefinition = require('../models/blRowDefinition.model');
+const {
+  DEFAULT_BL_ROW_DEFINITIONS,
+  normalizeNumericDefault,
+  normalizeVisibleTo,
+  normalizeDescription,
+  slugifyKey,
+} = require('../config/blRowDefinitions');
 const {
   DEFAULT_ROLES,
   ensureRolesSeeded,
@@ -91,6 +99,66 @@ function generateRoleKey(name = '') {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+}
+
+function blRowDefinitionResponse(row) {
+  return {
+    _id: row._id,
+    key: row.key,
+    sn: row.sn,
+    description: row.description,
+    visibleTo: normalizeVisibleTo(row.visibleTo),
+    defaultQty: normalizeNumericDefault(row.defaultQty, 1),
+    defaultRate: normalizeNumericDefault(row.defaultRate, 0),
+    isActive: row.isActive,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+async function ensureBlRowDefinitionsSeeded() {
+  const existingRows = await BLRowDefinition.find().sort({ sn: 1 }).lean();
+  if (!existingRows.length) {
+    await BLRowDefinition.insertMany(
+      DEFAULT_BL_ROW_DEFINITIONS.map((row) => ({
+        key: row.key,
+        sn: row.sn,
+        description: row.description,
+        visibleTo: normalizeVisibleTo(row.visibleTo),
+        defaultQty: normalizeNumericDefault(row.defaultQty, 1),
+        defaultRate: normalizeNumericDefault(row.defaultRate, 0),
+        isActive: true,
+      }))
+    );
+    return BLRowDefinition.find().sort({ sn: 1 });
+  }
+
+  const existingKeys = new Set(existingRows.map((row) => row.key || slugifyKey(row.description)));
+  const existingDescriptions = new Set(existingRows.map((row) => normalizeDescription(row.description)));
+  let nextSn = Math.max(...existingRows.map((row) => Number(row.sn) || 0), 0) + 1;
+  const toInsert = [];
+
+  for (const row of DEFAULT_BL_ROW_DEFINITIONS) {
+    const normalizedDescription = normalizeDescription(row.description);
+    if (existingKeys.has(row.key) || existingDescriptions.has(normalizedDescription)) continue;
+    toInsert.push({
+      key: row.key,
+      sn: nextSn++,
+      description: row.description,
+      visibleTo: normalizeVisibleTo(row.visibleTo),
+      defaultQty: normalizeNumericDefault(row.defaultQty, 1),
+      defaultRate: normalizeNumericDefault(row.defaultRate, 0),
+      isActive: true,
+    });
+    existingKeys.add(row.key);
+    existingDescriptions.add(normalizedDescription);
+  }
+
+  if (toInsert.length) {
+    await BLRowDefinition.insertMany(toInsert);
+  }
+
+  return BLRowDefinition.find().sort({ sn: 1 });
 }
 
 async function getAssignedPermissionKeys(roleKey) {
@@ -206,6 +274,149 @@ exports.updateRole = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Unable to update role', error: error.message });
+  }
+};
+
+exports.listBlRowDefinitions = async (_req, res) => {
+  try {
+    const rows = await ensureBlRowDefinitionsSeeded();
+    res.json({ rows: rows.map(blRowDefinitionResponse) });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Unable to load BL row definitions', error: error.message });
+  }
+};
+
+exports.createBlRowDefinition = async (req, res) => {
+  try {
+    await ensureBlRowDefinitionsSeeded();
+
+    const description = String(req.body.description || '').trim();
+    const visibleTo = normalizeVisibleTo(req.body.visibleTo);
+    const defaultQty = normalizeNumericDefault(req.body.defaultQty, 1);
+    const defaultRate = normalizeNumericDefault(req.body.defaultRate, 0);
+    if (!description) {
+      return res.status(400).json({ message: 'Description is required' });
+    }
+
+    const key = slugifyKey(description);
+    const normalizedDescription = normalizeDescription(description);
+    const existing = await BLRowDefinition.findOne({
+      $or: [
+        { key },
+        { description: new RegExp(`^${normalizedDescription.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+      ],
+    });
+    if (existing) {
+      return res.status(400).json({ message: 'A BL row definition with this description already exists' });
+    }
+
+    const last = await BLRowDefinition.findOne().sort({ sn: -1 }).lean();
+    const row = await BLRowDefinition.create({
+      key,
+      sn: (Number(last?.sn) || 0) + 1,
+      description,
+      visibleTo,
+      defaultQty,
+      defaultRate,
+      isActive: true,
+    });
+
+    await logAudit({
+      userId: req.user._id,
+      module: 'Access Control',
+      entity: 'BLRowDefinition',
+      entityId: row._id,
+      action: 'Created',
+      before: {},
+      after: blRowDefinitionResponse(row),
+      remarks: `Created BL row definition ${row.key}`,
+    });
+
+    res.status(201).json({ message: 'BL row definition created', row: blRowDefinitionResponse(row) });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Unable to create BL row definition', error: error.message });
+  }
+};
+
+exports.updateBlRowDefinition = async (req, res) => {
+  try {
+    const row = await BLRowDefinition.findById(req.params.id);
+    if (!row) {
+      return res.status(404).json({ message: 'BL row definition not found' });
+    }
+
+    const before = blRowDefinitionResponse(row);
+    const description = String(req.body.description || row.description).trim();
+    if (!description) {
+      return res.status(400).json({ message: 'Description is required' });
+    }
+
+    const nextKey = slugifyKey(description);
+    const normalizedDescription = normalizeDescription(description);
+    const duplicate = await BLRowDefinition.findOne({
+      _id: { $ne: row._id },
+      $or: [
+        { key: nextKey },
+        { description: new RegExp(`^${normalizedDescription.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+      ],
+    });
+    if (duplicate) {
+      return res.status(400).json({ message: 'Another BL row definition with this description already exists' });
+    }
+
+    row.description = description;
+    row.key = nextKey;
+    row.visibleTo = normalizeVisibleTo(req.body.visibleTo);
+    row.defaultQty = normalizeNumericDefault(req.body.defaultQty, row.defaultQty ?? 1);
+    row.defaultRate = normalizeNumericDefault(req.body.defaultRate, row.defaultRate ?? 0);
+    if (typeof req.body.isActive === 'boolean') row.isActive = req.body.isActive;
+    await row.save();
+
+    await logAudit({
+      userId: req.user._id,
+      module: 'Access Control',
+      entity: 'BLRowDefinition',
+      entityId: row._id,
+      action: 'Updated',
+      before,
+      after: blRowDefinitionResponse(row),
+      remarks: `Updated BL row definition ${row.key}`,
+    });
+
+    res.json({ message: 'BL row definition updated', row: blRowDefinitionResponse(row) });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Unable to update BL row definition', error: error.message });
+  }
+};
+
+exports.deleteBlRowDefinition = async (req, res) => {
+  try {
+    const row = await BLRowDefinition.findById(req.params.id);
+    if (!row) {
+      return res.status(404).json({ message: 'BL row definition not found' });
+    }
+
+    const before = blRowDefinitionResponse(row);
+    await row.deleteOne();
+
+    await logAudit({
+      userId: req.user._id,
+      module: 'Access Control',
+      entity: 'BLRowDefinition',
+      entityId: row._id,
+      action: 'Deleted',
+      before,
+      after: {},
+      remarks: `Deleted BL row definition ${row.key}`,
+    });
+
+    res.json({ message: 'BL row definition deleted' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Unable to delete BL row definition', error: error.message });
   }
 };
 

@@ -23,6 +23,7 @@ router.get('/dashboard',           authMiddleware, authorize({ tag: 'any-active'
 router.get('/reports/export-data', authMiddleware, authorize({ tag: 'any-active' }), controller.getShipmentReportExportData);
 router.get('/reports/export/excel',authMiddleware, authorize({ tag: 'any-active' }), controller.downloadShipmentReportExcel);
 router.get('/reports/export/pdf',  authMiddleware, authorize({ tag: 'any-active' }), controller.downloadShipmentReportPdf);
+router.get('/bl-row-definitions',  authMiddleware, authorize({ tag: 'any-active' }), controller.getBlRowDefinitions);
 router.get('/:id',                 authMiddleware, authorize({ tag: 'any-active' }), controller.getShipmentById);
 
 // ── Write endpoints — role-specific (intentional business rules) ─────────────
@@ -176,9 +177,14 @@ router.patch(
       { name: 'arrivalNoticeDocument', maxCount: 1 },
       { name: 'advanceRequestDocument', maxCount: 1 },
       { name: 'doReleasedDocument', maxCount: 1 },
-      { name: 'dpApprovalDocument', maxCount: 1 },
+      { name: 'boePassingDocument', maxCount: 1 },
       { name: 'customsClearanceDocument', maxCount: 1 },
       { name: 'municipalityDocument', maxCount: 1 },
+      { name: 'customsDocBoe', maxCount: 1 },
+      { name: 'customsDocDo', maxCount: 1 },
+      { name: 'customsDocBl', maxCount: 1 },
+      { name: 'customsDocInvoice', maxCount: 1 },
+      { name: 'customsDocPackingList', maxCount: 1 },
     ])(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
       next();
@@ -257,6 +263,10 @@ router.patch(
 
 // GRN — Purchase team only
 router.patch('/container/grn/:id', authMiddleware, authorize({ tag: 'any-active' }), controller.addContainerGRN);
+
+// Bulk save endpoints
+router.post('/container/storage/bulk-save', authMiddleware, authorize({ tag: 'any-active' }), controller.bulkSaveStorageArrival);
+router.post('/container/transportation/bulk-save', authMiddleware, authorize({ tag: 'any-active' }), controller.bulkSaveTransportationArranged);
 
 // Supplier email — Purchase team only
 router.patch('/:id/supplier-email', authMiddleware, authorize({ tag: 'any-active' }), controller.updateSupplierEmail);

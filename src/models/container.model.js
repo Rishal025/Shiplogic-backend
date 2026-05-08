@@ -110,17 +110,42 @@ const actualContainerSchema = new mongoose.Schema({
   doReleasedDocumentUrl: { type: String },
   doReleasedDocumentName: { type: String },
   doReleasedRemarks: { type: String },
-  dpApprovalDate: { type: Date },
-  dpApprovalDocumentUrl: { type: String },
-  dpApprovalDocumentName: { type: String },
-  dpApprovalRemarks: { type: String },
+  boePassingDate: { type: Date },
+  boePassingDocumentUrl: { type: String },
+  boePassingDocumentName: { type: String },
+  boePassingRemarks: { type: String },
+  dmBarcode: { type: String },
   customsClearanceRemarks: { type: String },
   tokenReceivedDate: { type: Date },
   municipalityDate: { type: Date },
   municipalityDocumentUrl: { type: String },
   municipalityDocumentName: { type: String },
   municipalityRemarks: { type: String },
+  municipalityStatus: { type: String, enum: ['open', 'closed'], default: 'open' },
+  municipalityStatusComment: { type: String },
   lockedLogisticsSections: [{ type: String }],
+
+  // Customs Original Document Submission
+  customsOriginalDocuments: {
+    boeSubmissionDate: { type: Date },
+    boeDocumentUrl: { type: String },
+    boeDocumentName: { type: String },
+    doSubmissionDate: { type: Date },
+    doDocumentUrl: { type: String },
+    doDocumentName: { type: String },
+    blOriginalSubmissionDate: { type: Date },
+    blOriginalDocumentUrl: { type: String },
+    blOriginalDocumentName: { type: String },
+    invoiceSubmissionDate: { type: Date },
+    invoiceDocumentUrl: { type: String },
+    invoiceDocumentName: { type: String },
+    packingListSubmissionDate: { type: Date },
+    packingListDocumentUrl: { type: String },
+    packingListDocumentName: { type: String },
+    cooSubmissionDate: { type: Date },
+    cooDocumentUrl: { type: String },
+    cooDocumentName: { type: String }
+  },
 
   // Step 4 – Shipment Clearing Tracker (doc + date pairs; URLs for S3 later)
   deliveryOrderDocumentUrl: { type: String },
@@ -210,6 +235,7 @@ const actualContainerSchema = new mongoose.Schema({
   costSheetBookings: [{
     sn: { type: Number },
     description: { type: String },
+    visibleTo: [{ type: String }],
     requestAmount: { type: Number },
     // POINT 5: paidAmount removed, replaced with remarks
     remarks: { type: String, default: '' }
@@ -247,7 +273,7 @@ const actualContainerSchema = new mongoose.Schema({
   transportationBooked: [{
     sn: { type: Number },
     containerSerialNo: { type: String },
-    transportCompanyName: { type: String },
+    transportCompanyName: { type: String, default: '' },
     bookedDate: { type: Date },
     bookingTime: { type: String },
     transportDate: { type: Date },
@@ -317,13 +343,17 @@ const actualContainerSchema = new mongoose.Schema({
   paymentAllocations: [{
     sn: { type: Number },
     description: { type: String },
+    visibleTo: [{ type: String }],
     requestAmount: { type: Number },
     paidAmount: { type: Number },
-    reference: { type: String }
+    reference: { type: String },
+    attachmentDocumentUrl: { type: String },
+    attachmentDocumentName: { type: String }
   }],
   paymentCostings: [{
     sn: { type: Number },
     description: { type: String },
+    visibleTo: [{ type: String }],
     requestAmount: { type: Number },
     paidAmount: { type: Number },
     // POINT 7: actualPaid removed — difference is now paidAmount - requestAmount

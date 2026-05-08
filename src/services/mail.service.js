@@ -153,8 +153,379 @@ async function sendWorkflowUpdateEmail({
   });
 }
 
+async function sendShipmentScheduledEmail({
+  to,
+  userName,
+  shipmentId,
+  shipmentUrl,
+  scheduleLines = [],
+  scheduledByLabel,
+}) {
+  const transporter = getTransporter();
+  const { from } = getMailerConfig();
+  const safeUserName = userName || 'Team';
+  const safeShipmentId = shipmentId || 'N/A';
+  const safeScheduledByLabel = scheduledByLabel || 'the Purchase Department';
+  const safeShipmentUrl = shipmentUrl || '';
+  const normalizedScheduleLines = Array.isArray(scheduleLines)
+    ? scheduleLines.filter((line) => String(line || '').trim().length > 0)
+    : [];
+
+  const bodyLine = `The above shipment has been scheduled by ${safeScheduledByLabel}. Please take note and proceed with the necessary action for this shipment schedule.`;
+  const textScheduleBlock = normalizedScheduleLines.length
+    ? ['', 'ETA / ETD Updates:', ...normalizedScheduleLines]
+    : [];
+  const htmlScheduleBlock = normalizedScheduleLines.length
+    ? `
+        <p><strong>ETA / ETD Updates:</strong></p>
+        <ul style="margin: 0 0 16px 18px; padding: 0;">
+          ${normalizedScheduleLines.map((line) => `<li>${line}</li>`).join('')}
+        </ul>
+      `
+    : '';
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: 'Shipment Scheduled Notification',
+    text: [
+      `Dear ${safeUserName},`,
+      '',
+      `Shipment ID: ${safeShipmentId}`,
+      '',
+      bodyLine,
+      ...textScheduleBlock,
+      ...(safeShipmentUrl ? ['', `Open in Portal: ${safeShipmentUrl}`] : []),
+      '',
+      'Regards,',
+      'Royal Horizon',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+        <p>Dear ${safeUserName},</p>
+        <p><strong>Shipment ID:</strong> ${safeShipmentId}</p>
+        <p>${bodyLine}</p>
+        ${htmlScheduleBlock}
+        ${safeShipmentUrl ? `<p><strong>Open in Portal:</strong> <a href="${safeShipmentUrl}">${safeShipmentUrl}</a></p>` : ''}
+        <p>Regards,<br/>Royal Horizon</p>
+      </div>
+    `,
+  });
+}
+
+async function sendActualContainerSavedEmail({
+  to,
+  userName,
+  shipmentId,
+  scheduleSerialNo,
+  actualSerialNo,
+  actualDetails = [],
+  shipmentUrl,
+  updatedBy,
+}) {
+  const transporter = getTransporter();
+  const { from } = getMailerConfig();
+  const safeUserName = userName || 'Team';
+  const safeShipmentId = shipmentId || 'N/A';
+  const safeScheduleSerialNo = scheduleSerialNo || 'N/A';
+  const safeActualSerialNo = actualSerialNo || 'N/A';
+  const safeShipmentUrl = shipmentUrl || '';
+  const safeUpdatedBy = updatedBy || 'A user';
+  const normalizedDetails = Array.isArray(actualDetails)
+    ? actualDetails.filter((line) => String(line || '').trim().length > 0)
+    : [];
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: 'Actual Shipment Update Notification',
+    text: [
+      `Dear ${safeUserName},`,
+      '',
+      `${safeUpdatedBy} saved an Actual shipment record.`,
+      `Shipment ID: ${safeShipmentId}`,
+      `Schedule Serial No: ${safeScheduleSerialNo}`,
+      `Actual Serial No: ${safeActualSerialNo}`,
+      ...(normalizedDetails.length ? ['', 'Saved Actual Details:', ...normalizedDetails] : []),
+      ...(safeShipmentUrl ? ['', `Open in Portal: ${safeShipmentUrl}`] : []),
+      '',
+      'Regards,',
+      'Royal Horizon',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+        <p>Dear ${safeUserName},</p>
+        <p><strong>${safeUpdatedBy}</strong> saved an <strong>Actual shipment</strong> record.</p>
+        <p>
+          <strong>Shipment ID:</strong> ${safeShipmentId}<br/>
+          <strong>Schedule Serial No:</strong> ${safeScheduleSerialNo}<br/>
+          <strong>Actual Serial No:</strong> ${safeActualSerialNo}
+        </p>
+        ${
+          normalizedDetails.length
+            ? `
+              <p><strong>Saved Actual Details:</strong></p>
+              <ul style="margin: 0 0 16px 18px; padding: 0;">
+                ${normalizedDetails.map((line) => `<li>${line}</li>`).join('')}
+              </ul>
+            `
+            : ''
+        }
+        ${safeShipmentUrl ? `<p><strong>Open in Portal:</strong> <a href="${safeShipmentUrl}">${safeShipmentUrl}</a></p>` : ''}
+        <p>Regards,<br/>Royal Horizon</p>
+      </div>
+    `,
+  });
+}
+
+async function sendClearingAdvanceStatusEmail({
+  to,
+  userName,
+  shipmentId,
+  containerSerialNo,
+  approvalStage,
+  updatedBy,
+  detailLines = [],
+  shipmentUrl,
+}) {
+  const transporter = getTransporter();
+  const { from } = getMailerConfig();
+  const safeUserName = userName || 'Team';
+  const safeShipmentId = shipmentId || 'N/A';
+  const safeContainerSerialNo = containerSerialNo || 'N/A';
+  const safeApprovalStage = approvalStage || 'Clearing Advance Updated';
+  const safeUpdatedBy = updatedBy || 'A user';
+  const safeShipmentUrl = shipmentUrl || '';
+  const normalizedDetails = Array.isArray(detailLines)
+    ? detailLines.filter((line) => String(line || '').trim().length > 0)
+    : [];
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: `Clearing Advance Notification: ${safeApprovalStage}`,
+    text: [
+      `Dear ${safeUserName},`,
+      '',
+      `${safeUpdatedBy} updated the Clearing Advance workflow.`,
+      `Shipment ID: ${safeShipmentId}`,
+      `Container Serial No: ${safeContainerSerialNo}`,
+      `Approval Stage: ${safeApprovalStage}`,
+      ...(normalizedDetails.length ? ['', ...normalizedDetails] : []),
+      ...(safeShipmentUrl ? ['', `Open in Portal: ${safeShipmentUrl}`] : []),
+      '',
+      'Regards,',
+      'Royal Horizon',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+        <p>Dear ${safeUserName},</p>
+        <p><strong>${safeUpdatedBy}</strong> updated the <strong>Clearing Advance</strong> workflow.</p>
+        <p>
+          <strong>Shipment ID:</strong> ${safeShipmentId}<br/>
+          <strong>Container Serial No:</strong> ${safeContainerSerialNo}<br/>
+          <strong>Approval Stage:</strong> ${safeApprovalStage}
+        </p>
+        ${
+          normalizedDetails.length
+            ? `
+              <ul style="margin: 0 0 16px 18px; padding: 0;">
+                ${normalizedDetails.map((line) => `<li>${line}</li>`).join('')}
+              </ul>
+            `
+            : ''
+        }
+        ${safeShipmentUrl ? `<p><strong>Open in Portal:</strong> <a href="${safeShipmentUrl}">${safeShipmentUrl}</a></p>` : ''}
+        <p>Regards,<br/>Royal Horizon</p>
+      </div>
+    `,
+  });
+}
+
+async function sendPaymentAllocationStatusEmail({
+  to,
+  userName,
+  shipmentId,
+  containerSerialNo,
+  updatedBy,
+  detailLines = [],
+  shipmentUrl,
+}) {
+  const transporter = getTransporter();
+  const { from } = getMailerConfig();
+  const safeUserName = userName || 'Team';
+  const safeShipmentId = shipmentId || 'N/A';
+  const safeContainerSerialNo = containerSerialNo || 'N/A';
+  const safeUpdatedBy = updatedBy || 'A user';
+  const safeShipmentUrl = shipmentUrl || '';
+  const normalizedDetails = Array.isArray(detailLines)
+    ? detailLines.filter((line) => String(line || '').trim().length > 0)
+    : [];
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: 'Payment Allocation Saved Notification',
+    text: [
+      `Dear ${safeUserName},`,
+      '',
+      `${safeUpdatedBy} saved the Payment Allocation section.`,
+      `Shipment ID: ${safeShipmentId}`,
+      `Container Serial No: ${safeContainerSerialNo}`,
+      ...(normalizedDetails.length ? ['', ...normalizedDetails] : []),
+      ...(safeShipmentUrl ? ['', `Open in Portal: ${safeShipmentUrl}`] : []),
+      '',
+      'Regards,',
+      'Royal Horizon',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+        <p>Dear ${safeUserName},</p>
+        <p><strong>${safeUpdatedBy}</strong> saved the <strong>Payment Allocation</strong> section.</p>
+        <p>
+          <strong>Shipment ID:</strong> ${safeShipmentId}<br/>
+          <strong>Container Serial No:</strong> ${safeContainerSerialNo}
+        </p>
+        ${
+          normalizedDetails.length
+            ? `<ul style="margin: 0 0 16px 18px; padding: 0;">${normalizedDetails.map((line) => `<li>${line}</li>`).join('')}</ul>`
+            : ''
+        }
+        ${safeShipmentUrl ? `<p><strong>Open in Portal:</strong> <a href="${safeShipmentUrl}">${safeShipmentUrl}</a></p>` : ''}
+        <p>Regards,<br/>Royal Horizon</p>
+      </div>
+    `,
+  });
+}
+
+async function sendStorageAllocationStatusEmail({
+  to,
+  userName,
+  shipmentId,
+  containerSerialNo,
+  approvalStage,
+  updatedBy,
+  detailLines = [],
+  shipmentUrl,
+}) {
+  const transporter = getTransporter();
+  const { from } = getMailerConfig();
+  const safeUserName = userName || 'Team';
+  const safeShipmentId = shipmentId || 'N/A';
+  const safeContainerSerialNo = containerSerialNo || 'N/A';
+  const safeApprovalStage = approvalStage || 'Storage Allocation Updated';
+  const safeUpdatedBy = updatedBy || 'A user';
+  const safeShipmentUrl = shipmentUrl || '';
+  const normalizedDetails = Array.isArray(detailLines)
+    ? detailLines.filter((line) => String(line || '').trim().length > 0)
+    : [];
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: `Storage Allocation Notification: ${safeApprovalStage}`,
+    text: [
+      `Dear ${safeUserName},`,
+      '',
+      `${safeUpdatedBy} updated the Storage Allocation workflow.`,
+      `Shipment ID: ${safeShipmentId}`,
+      `Container Serial No: ${safeContainerSerialNo}`,
+      `Approval Stage: ${safeApprovalStage}`,
+      ...(normalizedDetails.length ? ['', ...normalizedDetails] : []),
+      ...(safeShipmentUrl ? ['', `Open in Portal: ${safeShipmentUrl}`] : []),
+      '',
+      'Regards,',
+      'Royal Horizon',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+        <p>Dear ${safeUserName},</p>
+        <p><strong>${safeUpdatedBy}</strong> updated the <strong>Storage Allocation</strong> workflow.</p>
+        <p>
+          <strong>Shipment ID:</strong> ${safeShipmentId}<br/>
+          <strong>Container Serial No:</strong> ${safeContainerSerialNo}<br/>
+          <strong>Approval Stage:</strong> ${safeApprovalStage}
+        </p>
+        ${
+          normalizedDetails.length
+            ? `<ul style="margin: 0 0 16px 18px; padding: 0;">${normalizedDetails.map((line) => `<li>${line}</li>`).join('')}</ul>`
+            : ''
+        }
+        ${safeShipmentUrl ? `<p><strong>Open in Portal:</strong> <a href="${safeShipmentUrl}">${safeShipmentUrl}</a></p>` : ''}
+        <p>Regards,<br/>Royal Horizon</p>
+      </div>
+    `,
+  });
+}
+
+async function sendPaymentCostingStatusEmail({
+  to,
+  userName,
+  shipmentId,
+  containerSerialNo,
+  approvalStage,
+  updatedBy,
+  detailLines = [],
+  shipmentUrl,
+}) {
+  const transporter = getTransporter();
+  const { from } = getMailerConfig();
+  const safeUserName = userName || 'Team';
+  const safeShipmentId = shipmentId || 'N/A';
+  const safeContainerSerialNo = containerSerialNo || 'N/A';
+  const safeApprovalStage = approvalStage || 'Payment Costing Updated';
+  const safeUpdatedBy = updatedBy || 'A user';
+  const safeShipmentUrl = shipmentUrl || '';
+  const normalizedDetails = Array.isArray(detailLines)
+    ? detailLines.filter((line) => String(line || '').trim().length > 0)
+    : [];
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: `Payment Costing Notification: ${safeApprovalStage}`,
+    text: [
+      `Dear ${safeUserName},`,
+      '',
+      `${safeUpdatedBy} updated the Payment Costing workflow.`,
+      `Shipment ID: ${safeShipmentId}`,
+      `Container Serial No: ${safeContainerSerialNo}`,
+      `Approval Stage: ${safeApprovalStage}`,
+      ...(normalizedDetails.length ? ['', ...normalizedDetails] : []),
+      ...(safeShipmentUrl ? ['', `Open in Portal: ${safeShipmentUrl}`] : []),
+      '',
+      'Regards,',
+      'Royal Horizon',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+        <p>Dear ${safeUserName},</p>
+        <p><strong>${safeUpdatedBy}</strong> updated the <strong>Payment Costing</strong> workflow.</p>
+        <p>
+          <strong>Shipment ID:</strong> ${safeShipmentId}<br/>
+          <strong>Container Serial No:</strong> ${safeContainerSerialNo}<br/>
+          <strong>Approval Stage:</strong> ${safeApprovalStage}
+        </p>
+        ${
+          normalizedDetails.length
+            ? `<ul style="margin: 0 0 16px 18px; padding: 0;">${normalizedDetails.map((line) => `<li>${line}</li>`).join('')}</ul>`
+            : ''
+        }
+        ${safeShipmentUrl ? `<p><strong>Open in Portal:</strong> <a href="${safeShipmentUrl}">${safeShipmentUrl}</a></p>` : ''}
+        <p>Regards,<br/>Royal Horizon</p>
+      </div>
+    `,
+  });
+}
+
 module.exports = {
   sendSupplierInviteEmail,
   sendInternalUserInviteEmail,
   sendWorkflowUpdateEmail,
+  sendShipmentScheduledEmail,
+  sendActualContainerSavedEmail,
+  sendClearingAdvanceStatusEmail,
+  sendPaymentAllocationStatusEmail,
+  sendStorageAllocationStatusEmail,
+  sendPaymentCostingStatusEmail,
 };
