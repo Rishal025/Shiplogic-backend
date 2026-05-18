@@ -214,7 +214,9 @@ const buildStorageArrivalPendingApproval = (user) => ({
 const hasSavedClearingAdvanceData = (container) => {
   const rows = container?.actual?.costSheetBookings || [];
   return Array.isArray(rows) && rows.some((row) =>
-    Number(row?.requestAmount || 0) > 0 || String(row?.remarks || '').trim().length > 0
+    Number(row?.requestAmount || 0) > 0 ||
+    String(row?.remarks || '').trim().length > 0 ||
+    String(row?.attachmentDocumentUrl || '').trim().length > 0
   );
 };
 
@@ -767,7 +769,7 @@ const SHIPMENT_REPORT_COLUMNS = [
   { header: 'Rice Name', key: 'riceName', width: 18 },
   { header: 'Packing', key: 'packing', width: 12 },
   { header: 'PI No.', key: 'piNo', width: 20 },
-  { header: 'CI No.', key: 'ciNo', width: 20 },
+  // { header: 'CI No.', key: 'ciNo', width: 20 },
   { header: 'FCL', key: 'fcl', width: 10 },
   { header: 'Cont. Size', key: 'containerSize', width: 12 },
   { header: 'Buying Unit', key: 'buyingUnit', width: 14 },
@@ -775,7 +777,6 @@ const SHIPMENT_REPORT_COLUMNS = [
   { header: 'FC per Unit', key: 'fcPerUnit', width: 14 },
   { header: 'Total FC', key: 'totalFC', width: 16 },
   { header: 'Inco Terms', key: 'incoterms', width: 14 },
-  { header: 'PO Number', key: 'poNumber', width: 20 },
   { header: 'FPO Number', key: 'fpoNo', width: 20 },
   { header: 'Bank Name', key: 'bankName', width: 18 },
   { header: 'Payment Terms', key: 'paymentTerms', width: 18 },
@@ -783,8 +784,8 @@ const SHIPMENT_REPORT_COLUMNS = [
   { header: 'No. of Shipments', key: 'noOfShipments', width: 16 },
   { header: 'Port of Loading', key: 'portOfLoading', width: 20 },
   { header: 'Port of Discharge', key: 'portOfDischarge', width: 20 },
-  { header: 'Planned ETD', key: 'plannedETD', width: 14 },
-  { header: 'Planned ETA', key: 'plannedETA', width: 14 },
+  // { header: 'Planned ETD', key: 'plannedETD', width: 14 },
+  // { header: 'Planned ETA', key: 'plannedETA', width: 14 },
   { header: 'Advance Amount', key: 'advanceAmount', width: 16 },
   { header: 'Bags', key: 'bags', width: 12 },
   { header: 'Pallet', key: 'pallet', width: 12 },
@@ -799,6 +800,28 @@ const formatReportCellValue = (value, key) => {
     return value;
   }
   return String(value);
+};
+
+const getDisplayStageName = (stage) => {
+  const normalizedStage = String(stage || '').trim();
+  if (normalizedStage === 'Planned Split') return 'Shipment Split';
+  return normalizedStage;
+};
+
+const getFirstMeaningfulNumber = (...values) => {
+  for (const value of values) {
+    if (value == null || value === '') continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed !== 0) return parsed;
+  }
+
+  for (const value of values) {
+    if (value == null || value === '') continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+
+  return '';
 };
 
 const hasValue = (value) => String(value ?? '').trim().length > 0;
@@ -984,6 +1007,8 @@ const buildShipmentReportRows = async () => {
     containerMap.get(key).push(container);
   });
 
+  const totalShipments = shipments.length;
+
   const rows = shipments.map((shipment, index) => {
     const shipmentContainers = containerMap.get(String(shipment._id)) || [];
     const firstContainer = shipmentContainers[0] || null;
@@ -991,7 +1016,7 @@ const buildShipmentReportRows = async () => {
     const planned = firstContainer?.planned || {};
 
     return {
-      sn: index + 1,
+      sn: totalShipments - index,
       year: shipment.year || '',
       shipmentNo: shipment.shipmentNo || '',
       date: formatDateValue(shipment.orderDate),
@@ -1014,14 +1039,14 @@ const buildShipmentReportRows = async () => {
       fpoNo: shipment.fpoNo || '',
       bankName: shipment.bankName || '',
       paymentTerms: shipment.paymentTerms || '',
-      currentStage: shipment.currentStage || '',
-      noOfShipments: shipment.noOfShipments ?? shipment.assumedContainerCount ?? '',
+      currentStage: getDisplayStageName(shipment.currentStage || ''),
+      noOfShipments: shipment.noOfShipments ?? shipment.assumedContainerCount ?? 0,
       portOfLoading: shipment.portOfLoading || actual.portOfLoading || '',
       portOfDischarge: shipment.portOfDischarge || actual.portOfDischarge || '',
       plannedETD: formatDateValue(shipment.plannedETD || planned.etd || actual.updatedETD),
       plannedETA: formatDateValue(shipment.plannedETA || planned.eta || actual.updatedETA),
       advanceAmount: shipment.advanceAmount ?? '',
-      bags: actual.bags ?? planned.bags ?? shipment.bags ?? '',
+      bags: getFirstMeaningfulNumber(actual.bags, planned.bags, shipment.bags),
       pallet: actual.pallet ?? shipment.pallet ?? '',
     };
   });
@@ -1772,7 +1797,7 @@ exports.updateBLDetails = async (req, res) => {
     }
     const beforeUpdate = cloneForAudit(container.toObject());
 
-    const files = req.files || {};
+    const files = normalizeUploadedFiles(req.files || {});
     const costSheetBookingDocument = files?.costSheetBookingDocument?.[0];
 
     const {
@@ -1838,15 +1863,29 @@ exports.updateBLDetails = async (req, res) => {
     if (packagingDate !== undefined) container.actual.packagingDate = toDateOrNull(packagingDate);
     if (grossWeight !== undefined) container.actual.grossWeight = grossWeight || '';
     if (netWeight !== undefined) container.actual.netWeight = netWeight || '';
+    const uploadedByField = {};
+    for (const [field, list] of Object.entries(files)) {
+      const file = Array.isArray(list) ? list[0] : null;
+      if (!file) continue;
+      const uploaded = await uploadBufferToS3(file, `shipments/bl-details/${field}`);
+      uploadedByField[field] = uploaded;
+    }
+
     if (Array.isArray(parsedCostSheetBookings)) {
-      container.actual.costSheetBookings = parsedCostSheetBookings.map((row) => ({
-        sn: Number(row.sn) || 0,
-        description: row.description || '',
-        visibleTo: normalizeVisibleTo(row.visibleTo),
-        requestAmount: Number(row.requestAmount ?? 0),
-        // POINT 5: paidAmount removed, replaced with remarks
-        remarks: row.remarks ?? ''
-      }));
+      container.actual.costSheetBookings = parsedCostSheetBookings.map((row, index) => {
+        const existing = container.actual?.costSheetBookings?.[index] || {};
+        const attachmentUpload = uploadedByField[`costSheetBookings_${index}_attachment`];
+        return {
+          sn: Number(row.sn) || 0,
+          description: row.description || '',
+          visibleTo: normalizeVisibleTo(row.visibleTo),
+          requestAmount: Number(row.requestAmount ?? 0),
+          // POINT 5: paidAmount removed, replaced with remarks
+          remarks: row.remarks ?? '',
+          attachmentDocumentUrl: attachmentUpload?.url || row.attachmentDocumentUrl || existing.attachmentDocumentUrl || '',
+          attachmentDocumentName: attachmentUpload?.fileName || row.attachmentDocumentName || existing.attachmentDocumentName || '',
+        };
+      });
     }
     if (Array.isArray(parsedStorageAllocations)) {
       container.actual.storageAllocations = parsedStorageAllocations.map((row) => ({
@@ -2939,6 +2978,8 @@ exports.approveClearingAdvance = async (req, res) => {
     const effectiveStatus =
       currentState.status === CLEARING_ADVANCE_APPROVAL_STATUSES.draft && hasSavedClearingAdvanceData(container)
         ? CLEARING_ADVANCE_APPROVAL_STATUSES.pendingFas
+        : currentState.status === CLEARING_ADVANCE_APPROVAL_STATUSES.pendingFasManager
+          ? CLEARING_ADVANCE_APPROVAL_STATUSES.approved
         : currentState.status;
     const shipment = await Shipment.findById(container.shipmentId);
 
@@ -2946,7 +2987,7 @@ exports.approveClearingAdvance = async (req, res) => {
       const allowed = await hasRoleOrPermission(
         req.user,
         'shipment.tab.bl_details.clearing_advance.approve_fas',
-        ['FAS', 'Admin', 'Manager', 'Management']
+        ['FAS', 'FasManager', 'Admin', 'Manager', 'Management']
       );
       if (!allowed) {
         return res.status(403).json({ message: 'You do not have permission to approve clearing advance as FAS.' });
@@ -2954,55 +2995,13 @@ exports.approveClearingAdvance = async (req, res) => {
 
       container.actual.clearingAdvanceApproval = {
         ...currentState,
-        status: CLEARING_ADVANCE_APPROVAL_STATUSES.pendingFasManager,
+        status: CLEARING_ADVANCE_APPROVAL_STATUSES.approved,
         submittedAt: currentState.submittedAt || new Date(),
         submittedBy: currentState.submittedBy || null,
         fasApprovedAt: new Date(),
         fasApprovedBy: req.user._id,
-      };
-      await container.save();
-
-      if (shipment) {
-        notifyClearingAdvanceRolesByEmail({
-          roles: ['FasManager'],
-          shipment,
-          container,
-          actor: req.user,
-          approvalStage: 'Pending FAS Manager Approval',
-        }).catch((error) => {
-          console.error(`Clearing advance notification warning for ${shipment.shipmentNo || shipment._id}:`, error.message);
-        });
-      }
-
-      await logAudit({
-        userId: req.user._id,
-        module: 'FAS',
-        entity: 'Container',
-        entityId: container._id,
-        action: 'ApproveClearingAdvanceFAS',
-        before: beforeUpdate,
-        after: cloneForAudit(container.toObject()),
-        remarks: 'Clearing advance approved by FAS'
-      });
-
-      return res.json({ message: 'Clearing advance approved by FAS successfully', container });
-    }
-
-    if (effectiveStatus === CLEARING_ADVANCE_APPROVAL_STATUSES.pendingFasManager) {
-      const allowed = await hasRoleOrPermission(
-        req.user,
-        'shipment.tab.bl_details.clearing_advance.approve_fas_manager',
-        ['FasManager', 'Admin', 'Manager', 'Management']
-      );
-      if (!allowed) {
-        return res.status(403).json({ message: 'You do not have permission to approve clearing advance as FAS manager.' });
-      }
-
-      container.actual.clearingAdvanceApproval = {
-        ...currentState,
-        status: CLEARING_ADVANCE_APPROVAL_STATUSES.approved,
-        fasManagerApprovedAt: new Date(),
-        fasManagerApprovedBy: req.user._id,
+        fasManagerApprovedAt: currentState.fasManagerApprovedAt || null,
+        fasManagerApprovedBy: currentState.fasManagerApprovedBy || null,
       };
       await container.save();
 
@@ -3023,13 +3022,13 @@ exports.approveClearingAdvance = async (req, res) => {
         module: 'FAS',
         entity: 'Container',
         entityId: container._id,
-        action: 'ApproveClearingAdvanceFasManager',
+        action: 'ApproveClearingAdvanceFAS',
         before: beforeUpdate,
         after: cloneForAudit(container.toObject()),
-        remarks: 'Clearing advance approved by FAS manager'
+        remarks: 'Clearing advance approved by FAS'
       });
 
-      return res.json({ message: 'Clearing advance approved by FAS manager successfully', container });
+      return res.json({ message: 'Clearing advance approved by FAS successfully', container });
     }
 
     if (effectiveStatus === CLEARING_ADVANCE_APPROVAL_STATUSES.approved) {
@@ -3260,7 +3259,64 @@ exports.getBlRowDefinitions = async (_req, res) => {
   }
 };
 
+const buildShipmentListQuery = ({ search = '', status = '' }) => {
+  const query = {};
+  const normalizedSearch = String(search || '').trim();
+  const normalizedStatus = String(status || '').trim();
 
+  if (normalizedSearch) {
+    query.$or = [
+      { shipmentNo: { $regex: normalizedSearch, $options: 'i' } },
+      { orderNumber: { $regex: normalizedSearch, $options: 'i' } },
+      { piNo: { $regex: normalizedSearch, $options: 'i' } },
+      { fpoNo: { $regex: normalizedSearch, $options: 'i' } },
+      { supplierName: { $regex: normalizedSearch, $options: 'i' } },
+      { itemDescription: { $regex: normalizedSearch, $options: 'i' } },
+      { brandName: { $regex: normalizedSearch, $options: 'i' } },
+    ];
+  }
+
+  if (normalizedStatus) {
+    query.currentStage = normalizedStatus;
+  }
+
+  return query;
+};
+
+const fetchShipmentList = async ({ page = 1, limit = 20, search = '', status = '' }) => {
+  const query = buildShipmentListQuery({ search, status });
+  const total = await Shipment.countDocuments(query);
+
+  const shipments = await Shipment.find(query)
+    .populate("supplierId", "name")
+    .populate("itemId", "description")
+    .skip((page - 1) * limit)
+    .limit(limit)
+    .sort({ createdAt: -1 });
+
+  const formatted = shipments.map(s => ({
+    _id: s._id,
+    year: s.year,
+    shipmentNo: s.shipmentNo,
+    orderNumber: s.orderNumber,
+    orderDate: s.orderDate,
+    supplier: s.supplierId?.name || s.supplierName || null,
+    description: s.itemId?.description || s.itemDescription || null,
+    buyingQty: s.plannedQtyMT || s.totalOrderedQtyMT || 0,
+    fcPerUnit: s.fcPerUnit || 0,
+    totalFC: s.totalFC || 0,
+    noOfShipments: s.noOfShipments || s.assumedContainerCount || 0,
+    status: getDisplayStageName(s.currentStage)
+  }));
+
+  return {
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+    totalRecords: total,
+    shipments: formatted
+  };
+};
 
 exports.getAllShipments = async (req, res) => {
   try {
@@ -3268,55 +3324,23 @@ exports.getAllShipments = async (req, res) => {
 
     page = parseInt(page);
     limit = parseInt(limit);
+    const result = await fetchShipmentList({ page, limit, search, status });
+    res.json(result);
 
-    const query = {};
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
 
-    // 🔍 Search filter
-    if (search) {
-      query.$or = [
-        { shipmentNo: { $regex: search, $options: 'i' } },
-        { orderNumber: { $regex: search, $options: 'i' } },
-        { piNo: { $regex: search, $options: 'i' } }
-      ];
-    }
+exports.searchShipments = async (req, res) => {
+  try {
+    let { page = 1, limit = 20, q = '', status = '' } = req.query;
+    page = parseInt(page);
+    limit = parseInt(limit);
 
-    // 🎯 Status filter (optional)
-    if (status) {
-      query.currentStage = status;
-    }
-
-    const total = await Shipment.countDocuments(query);
-
-    const shipments = await Shipment.find(query)
-      .populate("supplierId", "name")
-      .populate("itemId", "description")
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .sort({ createdAt: -1 });
-
-    const formatted = shipments.map(s => ({
-      _id: s._id,
-      year: s.year,
-      shipmentNo: s.shipmentNo,
-      orderNumber: s.orderNumber,
-      orderDate: s.orderDate,
-      supplier: s.supplierId?.name || s.supplierName || null,
-      description: s.itemId?.description || s.itemDescription || null,
-      buyingQty: s.plannedQtyMT || s.totalOrderedQtyMT || 0,
-      fcPerUnit: s.fcPerUnit || 0,
-      totalFC: s.totalFC || 0,
-      noOfShipments: s.noOfShipments || s.assumedContainerCount || 0,
-      status: s.currentStage
-    }));
-
-    res.json({
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit),
-      totalRecords: total,
-      shipments: formatted
-    });
-
+    const result = await fetchShipmentList({ page, limit, search: q, status });
+    res.json(result);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
@@ -3404,10 +3428,90 @@ exports.downloadShipmentReportPdf = async (req, res) => {
     const startX = 34;
     const usableWidth = pageWidth - startX * 2;
     const tableTop = 120;
-    const rowHeight = 24;
+    const minRowHeight = 24;
     const footerY = pageHeight - 24;
-    const totalWeight = SHIPMENT_REPORT_COLUMNS.reduce((sum, column) => sum + column.width, 0);
-    const columnWidths = SHIPMENT_REPORT_COLUMNS.map((column) => (column.width / totalWeight) * usableWidth);
+    const getCellText = (row, column) => String(formatReportCellValue(row[column.key], column.key) || '');
+    const baseWeightedWidths = (() => {
+      const totalWeight = SHIPMENT_REPORT_COLUMNS.reduce((sum, column) => sum + column.width, 0);
+      return SHIPMENT_REPORT_COLUMNS.map((column) => (column.width / totalWeight) * usableWidth);
+    })();
+
+    const computeContentAwareColumnWidths = () => {
+      doc.font('Helvetica').fontSize(7.5);
+
+      const desiredWidths = SHIPMENT_REPORT_COLUMNS.map((column, index) => {
+        const baseWidth = baseWeightedWidths[index];
+        const minWidth = Math.max(Math.min(baseWidth * 0.72, 46), 28);
+        const maxWidth = column.key === 'itemDescription'
+          ? Math.max(baseWidth * 1.8, 120)
+          : column.key === 'shipmentNo'
+            ? Math.max(baseWidth * 1.6, 90)
+            : ['supplier', 'portOfLoading', 'portOfDischarge', 'paymentTerms', 'currentStage'].includes(column.key)
+              ? Math.max(baseWidth * 1.45, 72)
+              : Math.max(baseWidth * 1.3, 64);
+
+        const longestWidth = rows.reduce((max, row) => {
+          const value = getCellText(row, column);
+          if (!value) return max;
+          return Math.max(max, doc.widthOfString(value));
+        }, doc.widthOfString(column.header));
+
+        return Math.min(Math.max(longestWidth + 14, minWidth), maxWidth);
+      });
+
+      const totalDesiredWidth = desiredWidths.reduce((sum, width) => sum + width, 0);
+      if (totalDesiredWidth <= usableWidth) {
+        const extra = usableWidth - totalDesiredWidth;
+        const weights = SHIPMENT_REPORT_COLUMNS.map((column) =>
+          ['shipmentNo', 'supplier', 'itemDescription', 'portOfLoading', 'portOfDischarge', 'paymentTerms', 'currentStage'].includes(column.key) ? 2 : 1
+        );
+        const weightTotal = weights.reduce((sum, weight) => sum + weight, 0) || 1;
+        return desiredWidths.map((width, index) => width + ((extra * weights[index]) / weightTotal));
+      }
+
+      const minimums = desiredWidths.map((width, index) => Math.max(Math.min(baseWeightedWidths[index] * 0.6, width), 26));
+      const reducible = desiredWidths.reduce((sum, width, index) => sum + Math.max(width - minimums[index], 0), 0);
+      if (reducible <= 0) {
+        return baseWeightedWidths;
+      }
+
+      const overflow = totalDesiredWidth - usableWidth;
+      return desiredWidths.map((width, index) => {
+        const availableReduction = Math.max(width - minimums[index], 0);
+        const reduction = (overflow * availableReduction) / reducible;
+        return width - reduction;
+      });
+    };
+
+    const columnWidths = computeContentAwareColumnWidths();
+
+    const computeHeaderHeight = () => {
+      doc.font('Helvetica-Bold').fontSize(8);
+      return Math.max(
+        minRowHeight,
+        ...SHIPMENT_REPORT_COLUMNS.map((column, index) =>
+          doc.heightOfString(column.header, {
+            width: Math.max(columnWidths[index] - 8, 10),
+            align: 'left',
+          }) + 10
+        )
+      );
+    };
+
+    const headerHeight = computeHeaderHeight();
+
+    const computeRowHeight = (row) => {
+      doc.font('Helvetica').fontSize(7.5);
+      return Math.max(
+        minRowHeight,
+        ...SHIPMENT_REPORT_COLUMNS.map((column, index) =>
+          doc.heightOfString(getCellText(row, column), {
+            width: Math.max(columnWidths[index] - 8, 10),
+            align: 'left',
+          }) + 10
+        )
+      );
+    };
 
     const drawHeader = () => {
       doc.font('Helvetica-Bold').fontSize(24).text('Royal Horizon Group', startX, 26, { align: 'center', width: usableWidth });
@@ -3421,25 +3525,25 @@ exports.downloadShipmentReportPdf = async (req, res) => {
       doc.font('Helvetica-Bold').fontSize(8);
       SHIPMENT_REPORT_COLUMNS.forEach((column, index) => {
         const width = columnWidths[index];
-        doc.rect(x, y, width, rowHeight).fillAndStroke('#f1f5f9', '#0f172a');
-        doc.fillColor('#0f172a').text(column.header, x + 4, y + 7, {
+        doc.rect(x, y, width, headerHeight).fillAndStroke('#f1f5f9', '#0f172a');
+        doc.fillColor('#0f172a').text(column.header, x + 4, y + 5, {
           width: width - 8,
-          ellipsis: true,
+          align: 'left',
         });
         x += width;
       });
       doc.fillColor('#0f172a');
     };
 
-    const drawRow = (row, y) => {
+    const drawRow = (row, y, rowHeight) => {
       let x = startX;
       doc.font('Helvetica').fontSize(7.5);
       SHIPMENT_REPORT_COLUMNS.forEach((column, index) => {
         const width = columnWidths[index];
         doc.rect(x, y, width, rowHeight).stroke('#0f172a');
-        doc.text(String(formatReportCellValue(row[column.key], column.key)), x + 4, y + 7, {
+        doc.text(getCellText(row, column), x + 4, y + 5, {
           width: width - 8,
-          ellipsis: true,
+          align: 'left',
         });
         x += width;
       });
@@ -3448,17 +3552,18 @@ exports.downloadShipmentReportPdf = async (req, res) => {
     drawHeader();
     let currentY = tableTop;
     drawTableHeader(currentY);
-    currentY += rowHeight;
+    currentY += headerHeight;
 
     rows.forEach((row) => {
+      const rowHeight = computeRowHeight(row);
       if (currentY + rowHeight > footerY - 18) {
         doc.addPage();
         drawHeader();
         currentY = tableTop;
         drawTableHeader(currentY);
-        currentY += rowHeight;
+        currentY += headerHeight;
       }
-      drawRow(row, currentY);
+      drawRow(row, currentY, rowHeight);
       currentY += rowHeight;
     });
 
@@ -3501,7 +3606,7 @@ exports.getShipmentSummary = async (req, res) => {
 
     const stageMap = new Map();
     shipments.forEach((s) => {
-      const stage = s.currentStage || 'Shipment Entry';
+      const stage = getDisplayStageName(s.currentStage || 'Shipment Entry');
       stageMap.set(stage, (stageMap.get(stage) || 0) + 1);
     });
 
@@ -3587,7 +3692,7 @@ exports.getShipmentSummary = async (req, res) => {
       shipmentNo: s.shipmentNo,
       orderDate: s.orderDate || s.createdAt,
       plannedETA: s.plannedETA || null,
-      status: s.currentStage || 'Shipment Entry',
+      status: getDisplayStageName(s.currentStage || 'Shipment Entry'),
       totalAmount: Number(s?.payment?.totalAmount || 0),
       supplier: s?.supplierId?.name || '',
       item: s?.itemId?.description || ''
@@ -4087,7 +4192,16 @@ exports.getShipmentById = async (req, res) => {
         row.customsOriginalDocuments.packingList.documentName = signedCustomsPackingList.name;
       }
 
-      const [qualityRows, qualityReports, paymentAllocations, paymentCostings, storageSplits] = await Promise.all([
+      const [costSheetBookings, qualityRows, qualityReports, paymentAllocations, paymentCostings, storageSplits] = await Promise.all([
+        Promise.all((row.costSheetBookings || []).map(async (costRow) => {
+          const plainCostRow = toPlainObject(costRow);
+          const signed = await toSignedDocument(costRow.attachmentDocumentUrl, costRow.attachmentDocumentName);
+          return {
+            ...plainCostRow,
+            attachmentDocumentUrl: signed.url,
+            attachmentDocumentName: signed.name,
+          };
+        })),
         Promise.all((row.qualityRows || []).map(async (qualityRow) => {
           const plainQualityRow = toPlainObject(qualityRow);
           const [inhouse, strategic, thirdParty, attachment] = await Promise.all([
@@ -4146,6 +4260,7 @@ exports.getShipmentById = async (req, res) => {
         })),
       ]);
 
+      row.costSheetBookings = costSheetBookings;
       row.qualityRows = qualityRows;
       row.qualityReports = qualityReports;
       row.paymentAllocations = paymentAllocations;
@@ -4394,8 +4509,10 @@ function mapPythonResponseToExtraction(pythonRes) {
     const linePackaging = item.packaging ?? item.packing ?? getIndexedValue(lpo.packaging, index);
     if (linePackaging != null && linePackaging !== '') line.packagingType = String(linePackaging).trim();
 
-    const lineBuyingUnit = mapBuyingUnit(item.buying_unit ?? item.buyingUnit ?? item.unit ?? getIndexedValue(lpo.buying_unit, index) ?? getIndexedValue(lpo.unit, index));
-    if (lineBuyingUnit) line.buyingUnit = lineBuyingUnit;
+    // Buying unit should not be inferred from shipment-document extraction.
+    // Keep shipment extraction consistent by defaulting to MT instead of
+    // trusting OCR/model guesses like "Bag".
+    line.buyingUnit = 'MT';
 
     const lineQuantityMt = item.quantity_in_mt
       ?? item.quantityInMt
@@ -4616,7 +4733,9 @@ async function enrichExtractionItemsFromCatalog(data) {
       variant: item.variant || catalogItem.variant || '',
       hsCode: item.hsCode || catalogItem.hsCode || '',
       packagingType: item.packagingType || catalogItem.packing || '',
-      buyingUnit: item.buyingUnit || catalogItem.unit || '',
+      // Do not backfill buying unit from item master during extraction.
+      // If extraction does not return a confident value, default to MT.
+      buyingUnit: item.buyingUnit || 'MT',
     };
   });
 
@@ -4627,7 +4746,7 @@ async function enrichExtractionItemsFromCatalog(data) {
   if (firstItem.variant && !data.variant) data.variant = firstItem.variant;
   if (firstItem.hsCode && !data.hsCode) data.hsCode = firstItem.hsCode;
   if (firstItem.packagingType && !data.packagingType) data.packagingType = firstItem.packagingType;
-  if (firstItem.buyingUnit && !data.buyingUnit) data.buyingUnit = firstItem.buyingUnit;
+  if (!data.buyingUnit) data.buyingUnit = firstItem.buyingUnit || 'MT';
 
   return data;
 }

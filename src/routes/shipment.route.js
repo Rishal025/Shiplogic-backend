@@ -19,6 +19,7 @@ const upload = multer({
 // ── Read endpoints — any active role ────────────────────────────────────────
 
 router.get('/',                    authMiddleware, authorize({ tag: 'any-active' }), controller.getAllShipments);
+router.get('/search',              authMiddleware, authorize({ tag: 'any-active' }), controller.searchShipments);
 router.get('/dashboard',           authMiddleware, authorize({ tag: 'any-active' }), controller.getShipmentSummary);
 router.get('/reports/export-data', authMiddleware, authorize({ tag: 'any-active' }), controller.getShipmentReportExportData);
 router.get('/reports/export/excel',authMiddleware, authorize({ tag: 'any-active' }), controller.downloadShipmentReportExcel);
@@ -120,7 +121,7 @@ router.patch(
   authMiddleware,
   authorize({ tag: 'any-active' }),
   (req, res, next) => {
-    upload.fields([{ name: 'costSheetBookingDocument', maxCount: 1 }])(req, res, (err) => {
+    upload.any()(req, res, (err) => {
       if (err) return res.status(400).json({ message: err.message || 'Invalid file upload' });
       next();
     });

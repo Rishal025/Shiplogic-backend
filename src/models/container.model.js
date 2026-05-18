@@ -238,7 +238,9 @@ const actualContainerSchema = new mongoose.Schema({
     visibleTo: [{ type: String }],
     requestAmount: { type: Number },
     // POINT 5: paidAmount removed, replaced with remarks
-    remarks: { type: String, default: '' }
+    remarks: { type: String, default: '' },
+    attachmentDocumentUrl: { type: String },
+    attachmentDocumentName: { type: String }
   }],
   clearingAdvanceApproval: {
     type: approvalStateSchema,
