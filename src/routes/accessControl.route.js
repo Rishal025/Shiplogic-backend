@@ -33,6 +33,7 @@ router.put('/roles/:id/permissions', accessControlController.updateRolePermissio
 router.get('/users', accessControlController.listUsers);
 router.post('/users', accessControlController.createUser);
 router.patch('/users/:id', accessControlController.updateUser);
+router.patch('/users/:id/reset-password', accessControlController.resetUserPassword);
 
 // New permission system endpoints
 router.get('/system-permissions', accessControlController.getSystemPermissions);

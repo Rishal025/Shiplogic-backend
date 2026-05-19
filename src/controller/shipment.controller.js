@@ -29,7 +29,7 @@ const {
   slugifyKey,
 } = require('../config/blRowDefinitions');
 const mongoose = require('mongoose');
-const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 const crypto = require('crypto');
 
@@ -139,6 +139,18 @@ const formatDateTimeValue = (value) => {
     minute: '2-digit',
     second: '2-digit',
   });
+};
+
+const formatDateDifferenceDays = (actualValue, scheduledValue) => {
+  const actualDate = toDateOrNull(actualValue);
+  const scheduledDate = toDateOrNull(scheduledValue);
+  if (!actualDate || !scheduledDate) return '';
+
+  const normalize = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const differenceMs = normalize(actualDate).getTime() - normalize(scheduledDate).getTime();
+  const differenceDays = Math.round(differenceMs / (1000 * 60 * 60 * 24));
+  const prefix = differenceDays > 0 ? '+' : '';
+  return `${prefix}${differenceDays} day(s)`;
 };
 
 const WORKFLOW_NOTIFICATION_ROLE_MAP = {
@@ -761,6 +773,7 @@ const SHIPMENT_REPORT_COLUMNS = [
   { header: 'S/N', key: 'sn', width: 8 },
   { header: 'Year', key: 'year', width: 10 },
   { header: 'Shipment No.', key: 'shipmentNo', width: 24 },
+  { header: 'Actual Shipment No.', key: 'actualShipmentNo', width: 24 },
   { header: 'Date', key: 'date', width: 14 },
   { header: 'Supplier', key: 'supplier', width: 28 },
   { header: 'Country', key: 'country', width: 16 },
@@ -770,7 +783,7 @@ const SHIPMENT_REPORT_COLUMNS = [
   { header: 'Packing', key: 'packing', width: 12 },
   { header: 'PI No.', key: 'piNo', width: 20 },
   // { header: 'CI No.', key: 'ciNo', width: 20 },
-  { header: 'FCL', key: 'fcl', width: 10 },
+  // { header: 'FCL', key: 'fcl', width: 10 },
   { header: 'Cont. Size', key: 'containerSize', width: 12 },
   { header: 'Buying Unit', key: 'buyingUnit', width: 14 },
   { header: 'Buying Qty (MT)', key: 'buyingQtyMT', width: 16 },
@@ -784,8 +797,9 @@ const SHIPMENT_REPORT_COLUMNS = [
   { header: 'No. of Shipments', key: 'noOfShipments', width: 16 },
   { header: 'Port of Loading', key: 'portOfLoading', width: 20 },
   { header: 'Port of Discharge', key: 'portOfDischarge', width: 20 },
-  // { header: 'Planned ETD', key: 'plannedETD', width: 14 },
-  // { header: 'Planned ETA', key: 'plannedETA', width: 14 },
+  { header: 'Planned ETD', key: 'plannedETD', width: 14 },
+  { header: 'Planned ETA', key: 'plannedETA', width: 14 },
+  { header: 'Week', key: 'weekWiseShipment', width: 12 },
   { header: 'Advance Amount', key: 'advanceAmount', width: 16 },
   { header: 'Bags', key: 'bags', width: 12 },
   { header: 'Pallet', key: 'pallet', width: 12 },
@@ -796,6 +810,9 @@ const formatReportCellValue = (value, key) => {
   if (typeof value === 'number') {
     if (['fcPerUnit', 'totalFC', 'advanceAmount'].includes(key)) {
       return Number(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    }
+    if (['bags', 'pallet', 'buyingQtyMT', 'fcl', 'noOfShipments'].includes(key)) {
+      return Number(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
     }
     return value;
   }
@@ -1014,11 +1031,38 @@ const buildShipmentReportRows = async () => {
     const firstContainer = shipmentContainers[0] || null;
     const actual = firstContainer?.actual || {};
     const planned = firstContainer?.planned || {};
+    const children = shipmentContainers.map((container, childIndex) => {
+      const childActual = container?.actual || {};
+      const childPlanned = container?.planned || {};
+      const scheduledEtdSource = childPlanned.etd || shipment.plannedETD;
+      const scheduledEtaSource = childPlanned.eta || shipment.plannedETA;
+      const actualEtdSource = childActual.updatedETD || '';
+      const actualEtaSource = childActual.updatedETA || '';
+      return {
+        rowType: 'child',
+        shipmentNo: getScheduledShipmentId(shipment, childIndex),
+        actualShipmentNo: childActual.actualSerialNo || '',
+        scheduledETD: formatDateValue(scheduledEtdSource),
+        scheduledETA: formatDateValue(scheduledEtaSource),
+        actualETD: formatDateValue(actualEtdSource),
+        actualETA: formatDateValue(actualEtaSource),
+        etaDifference: formatDateDifferenceDays(actualEtaSource, scheduledEtaSource),
+        fcl: childActual.FCL ?? childPlanned.FCL ?? '',
+        containerSize: childActual.size || childPlanned.size || shipment.containersize || '',
+        buyingQtyMT: childActual.qtyMT ?? childPlanned.qtyMT ?? '',
+        bags: getFirstMeaningfulNumber(childActual.bags, childPlanned.bags, shipment.bags),
+        pallet: getFirstMeaningfulNumber(childActual.pallet, childPlanned.pallet, shipment.pallet),
+        weekWiseShipment: childActual.weekWiseShipment || childPlanned.weekWiseShipment || '',
+        currentStage: getDisplayStageName(shipment.currentStage || ''),
+      };
+    });
 
     return {
+      rowType: 'parent',
       sn: totalShipments - index,
       year: shipment.year || '',
       shipmentNo: shipment.shipmentNo || '',
+      actualShipmentNo: '',
       date: formatDateValue(shipment.orderDate),
       supplier: shipment.supplierId?.name || shipment.supplierName || '',
       country: shipment.countryOfOrigin || '',
@@ -1045,13 +1089,144 @@ const buildShipmentReportRows = async () => {
       portOfDischarge: shipment.portOfDischarge || actual.portOfDischarge || '',
       plannedETD: formatDateValue(shipment.plannedETD || planned.etd || actual.updatedETD),
       plannedETA: formatDateValue(shipment.plannedETA || planned.eta || actual.updatedETA),
+      weekWiseShipment: planned.weekWiseShipment || actual.weekWiseShipment || '',
       advanceAmount: shipment.advanceAmount ?? '',
       bags: getFirstMeaningfulNumber(actual.bags, planned.bags, shipment.bags),
       pallet: actual.pallet ?? shipment.pallet ?? '',
+      children,
     };
   });
 
   return rows;
+};
+
+const flattenShipmentReportRowsForExport = (rows = []) => {
+  return rows.flatMap((row) => {
+    const parentRow = { ...row };
+    delete parentRow.children;
+
+    const childRows = Array.isArray(row.children)
+      ? row.children.map((child) => ({
+          rowType: 'child',
+          sn: '',
+          year: '',
+          shipmentNo: `↳ ${child.shipmentNo || ''}`,
+          actualShipmentNo: child.actualShipmentNo || '',
+          date: child.scheduledETD || '',
+          supplier: child.scheduledETA || '',
+          country: child.actualETD || '',
+          variant: child.actualETA || '',
+          itemDescription: child.etaDifference || '',
+          riceName: child.weekWiseShipment || '',
+          packing: child.currentStage || '',
+          piNo: '',
+          ciNo: '',
+          fcl: '',
+          containerSize: '',
+          buyingUnit: '',
+          buyingQtyMT: '',
+          fcPerUnit: '',
+          totalFC: '',
+          incoterms: '',
+          poNumber: '',
+          fpoNo: '',
+          bankName: '',
+          paymentTerms: '',
+          currentStage: child.currentStage || '',
+          noOfShipments: '',
+          portOfLoading: '',
+          portOfDischarge: '',
+          plannedETD: '',
+          plannedETA: '',
+          weekWiseShipment: '',
+          advanceAmount: '',
+          bags: '',
+          pallet: '',
+        }))
+      : [];
+
+    if (!childRows.length) {
+      return [parentRow];
+    }
+
+    const spacerRow = {
+      rowType: 'spacer',
+      sn: '',
+      year: '',
+      shipmentNo: '',
+      actualShipmentNo: '',
+      date: '',
+      supplier: '',
+      country: '',
+      variant: '',
+      itemDescription: '',
+      riceName: '',
+      packing: '',
+      piNo: '',
+      ciNo: '',
+      fcl: '',
+      containerSize: '',
+      buyingUnit: '',
+      buyingQtyMT: '',
+      fcPerUnit: '',
+      totalFC: '',
+      incoterms: '',
+      poNumber: '',
+      fpoNo: '',
+      bankName: '',
+      paymentTerms: '',
+      currentStage: '',
+      noOfShipments: '',
+      portOfLoading: '',
+      portOfDischarge: '',
+      plannedETD: '',
+      plannedETA: '',
+      weekWiseShipment: '',
+      advanceAmount: '',
+      bags: '',
+      pallet: '',
+    };
+
+    const childHeaderRow = {
+      rowType: 'childHeader',
+      sn: '',
+      year: '',
+      shipmentNo: 'Shipment Split',
+      actualShipmentNo: 'Actual Shipment',
+      date: 'Schedule ETD',
+      supplier: 'Schedule ETA',
+      country: 'Actual ETD',
+      variant: 'Actual ETA',
+      itemDescription: 'ETA Difference',
+      riceName: 'Week',
+      packing: 'Stage',
+      piNo: '',
+      ciNo: '',
+      fcl: '',
+      containerSize: '',
+      buyingUnit: '',
+      buyingQtyMT: '',
+      fcPerUnit: '',
+      totalFC: '',
+      incoterms: '',
+      poNumber: '',
+      fpoNo: '',
+      bankName: '',
+      paymentTerms: '',
+      currentStage: 'Stage',
+      noOfShipments: '',
+      portOfLoading: '',
+      portOfDischarge: '',
+      plannedETD: '',
+      plannedETA: '',
+      weekWiseShipment: '',
+      advanceAmount: '',
+      bags: '',
+      pallet: '',
+    };
+
+    return [parentRow, spacerRow, childHeaderRow, ...childRows, spacerRow];
+  });
 };
 
 // Stage order — used to advance shipment status only forward
@@ -3365,39 +3540,187 @@ exports.getShipmentReportExportData = async (req, res) => {
 exports.downloadShipmentReportExcel = async (req, res) => {
   try {
     const rows = await buildShipmentReportRows();
+    const flattenedRows = flattenShipmentReportRowsForExport(rows);
     const downloadedBy = req.user?.name || 'Royal Horizon User';
     const downloadedAt = formatDateTimeValue(new Date());
     const title = 'Royal Horizon Group';
     const subtitle = 'Shipment Master Report';
     const totalColumns = SHIPMENT_REPORT_COLUMNS.length;
-
-    const sheetData = [
-      [title],
-      [subtitle],
-      [`Downloaded By: ${downloadedBy}`, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', `Downloaded At: ${downloadedAt}`],
-      [],
-      SHIPMENT_REPORT_COLUMNS.map((column) => column.header),
-      ...rows.map((row) => SHIPMENT_REPORT_COLUMNS.map((column) => formatReportCellValue(row[column.key], column.key))),
-      [],
-      ['Printed from Royal Horizon Systems'],
+    const childExcelKeys = [
+      'shipmentNo',
+      'actualShipmentNo',
+      'date',
+      'supplier',
+      'country',
+      'variant',
+      'itemDescription',
+      'riceName',
+      'packing',
     ];
+    const childExcelStartCol = 2;
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Shipment Report', {
+      views: [{ state: 'frozen', ySplit: 4 }],
+    });
 
-    const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
-    worksheet['!cols'] = SHIPMENT_REPORT_COLUMNS.map((column) => ({ wch: column.width }));
-    worksheet['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: totalColumns - 1 } },
-      { s: { r: 1, c: 0 }, e: { r: 1, c: totalColumns - 1 } },
-      { s: { r: rows.length + 7, c: 0 }, e: { r: rows.length + 7, c: totalColumns - 1 } },
-    ];
+    const borderDark = { style: 'thin', color: { argb: 'FF0F172A' } };
+    const borderSlate = { style: 'thin', color: { argb: 'FF94A3B8' } };
+    const borderLight = { style: 'thin', color: { argb: 'FFCBD5E1' } };
+    const fullDarkBorder = { top: borderDark, bottom: borderDark, left: borderDark, right: borderDark };
+    const fullSlateBorder = { top: borderSlate, bottom: borderSlate, left: borderSlate, right: borderSlate };
+    const fullLightBorder = { top: borderLight, bottom: borderLight, left: borderLight, right: borderLight };
 
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Shipment Report');
-    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    const defaultCellStyle = {
+      font: { name: 'Calibri', size: 11 },
+      alignment: { vertical: 'middle', horizontal: 'left' },
+      border: fullDarkBorder,
+    };
+    const headerCellStyle = {
+      font: { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF475569' } },
+      alignment: { vertical: 'middle', horizontal: 'left' },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } },
+      border: fullDarkBorder,
+    };
+    const childHeaderStyle = {
+      font: { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF334155' } },
+      alignment: { vertical: 'middle', horizontal: 'center' },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } },
+      border: fullSlateBorder,
+    };
+    const childHeaderHighlightStyle = {
+      font: { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF78350F' } },
+      alignment: { vertical: 'middle', horizontal: 'center' },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDE68A' } },
+      border: fullSlateBorder,
+    };
+    const childCellStyle = {
+      font: { name: 'Calibri', size: 11 },
+      alignment: { vertical: 'middle', horizontal: 'center' },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } },
+      border: fullLightBorder,
+    };
+    const childHighlightCellStyle = {
+      font: { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF1F2937' } },
+      alignment: { vertical: 'middle', horizontal: 'center' },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } },
+      border: fullLightBorder,
+    };
+
+    worksheet.columns = SHIPMENT_REPORT_COLUMNS.map((column) => ({
+      key: column.key,
+      width: Math.max(column.width, 12),
+    }));
+
+    worksheet.addRow([title]);
+    worksheet.addRow([subtitle]);
+    const metaRow = worksheet.addRow([
+      `Downloaded By: ${downloadedBy}`,
+      ...Array.from({ length: totalColumns - 2 }, () => ''),
+      `Downloaded At: ${downloadedAt}`,
+    ]);
+    const headerRow = worksheet.addRow(SHIPMENT_REPORT_COLUMNS.map((column) => column.header));
+
+    const titleRowNumber = 1;
+    const subtitleRowNumber = 2;
+    worksheet.mergeCells(titleRowNumber, 1, titleRowNumber, totalColumns);
+    worksheet.mergeCells(subtitleRowNumber, 1, subtitleRowNumber, totalColumns);
+
+    worksheet.getRow(titleRowNumber).height = 20;
+    worksheet.getRow(subtitleRowNumber).height = 18;
+    metaRow.height = 18;
+    headerRow.height = 22;
+
+    worksheet.getCell(titleRowNumber, 1).font = { name: 'Calibri', size: 14, bold: true };
+    worksheet.getCell(subtitleRowNumber, 1).font = { name: 'Calibri', size: 12, bold: true };
+    worksheet.getCell(titleRowNumber, 1).alignment = { horizontal: 'left', vertical: 'middle' };
+    worksheet.getCell(subtitleRowNumber, 1).alignment = { horizontal: 'left', vertical: 'middle' };
+    worksheet.getCell(titleRowNumber, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+    worksheet.getCell(subtitleRowNumber, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+
+    headerRow.eachCell((cell) => {
+      cell.font = headerCellStyle.font;
+      cell.alignment = headerCellStyle.alignment;
+      cell.fill = headerCellStyle.fill;
+      cell.border = headerCellStyle.border;
+    });
+
+    const childHighlightColumns = [childExcelStartCol, childExcelStartCol + 1];
+
+    flattenedRows.forEach((row) => {
+      const rowValues =
+        row?.rowType === 'childHeader' || row?.rowType === 'child'
+          ? (() => {
+              const values = Array.from({ length: totalColumns }, () => '');
+              childExcelKeys.forEach((key, offset) => {
+                values[childExcelStartCol - 1 + offset] = formatReportCellValue(row[key], key);
+              });
+              return values;
+            })()
+          : SHIPMENT_REPORT_COLUMNS.map((column) => formatReportCellValue(row[column.key], column.key));
+
+      const excelRow = worksheet.addRow(rowValues);
+
+      if (row?.rowType === 'spacer') {
+        excelRow.height = 12;
+        return;
+      }
+
+      if (row?.rowType === 'childHeader') {
+        excelRow.height = 21;
+      } else if (row?.rowType === 'child') {
+        excelRow.height = 20;
+      } else {
+        excelRow.height = 18;
+      }
+
+      excelRow.eachCell((cell, colNumber) => {
+        if (row?.rowType === 'childHeader') {
+          if (colNumber < childExcelStartCol || colNumber >= childExcelStartCol + childExcelKeys.length) {
+            return;
+          }
+          const style = childHighlightColumns.includes(colNumber)
+            ? childHeaderHighlightStyle
+            : childHeaderStyle;
+          cell.font = style.font;
+          cell.alignment = style.alignment;
+          cell.fill = style.fill;
+          cell.border = style.border;
+          return;
+        }
+
+        if (row?.rowType === 'child') {
+          if (colNumber < childExcelStartCol || colNumber >= childExcelStartCol + childExcelKeys.length) {
+            return;
+          }
+          const style = childHighlightColumns.includes(colNumber)
+            ? childHighlightCellStyle
+            : childCellStyle;
+          cell.font = style.font;
+          cell.alignment = style.alignment;
+          cell.fill = style.fill;
+          cell.border = style.border;
+          return;
+        }
+
+        cell.font = defaultCellStyle.font;
+        cell.alignment = defaultCellStyle.alignment;
+        cell.border = defaultCellStyle.border;
+      });
+    });
+
+    worksheet.addRow([]);
+    const footerRow = worksheet.addRow(['Printed from Royal Horizon Systems']);
+    worksheet.mergeCells(footerRow.number, 1, footerRow.number, totalColumns);
+    footerRow.height = 18;
+    worksheet.getCell(footerRow.number, 1).font = { name: 'Calibri', size: 11, italic: true, color: { argb: 'FF64748B' } };
+    worksheet.getCell(footerRow.number, 1).alignment = { horizontal: 'left', vertical: 'middle' };
+
+    const buffer = await workbook.xlsx.writeBuffer();
     const filename = `royal-horizon-shipment-report-${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    return res.send(buffer);
+    return res.send(Buffer.from(buffer));
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: 'Unable to generate Excel report' });
@@ -3407,6 +3730,7 @@ exports.downloadShipmentReportExcel = async (req, res) => {
 exports.downloadShipmentReportPdf = async (req, res) => {
   try {
     const rows = await buildShipmentReportRows();
+    const flattenedRows = flattenShipmentReportRowsForExport(rows);
     const downloadedBy = req.user?.name || 'Royal Horizon User';
     const downloadedAt = formatDateTimeValue(new Date());
     const filename = `royal-horizon-shipment-report-${new Date().toISOString().slice(0, 10)}.pdf`;
@@ -3450,7 +3774,7 @@ exports.downloadShipmentReportPdf = async (req, res) => {
               ? Math.max(baseWidth * 1.45, 72)
               : Math.max(baseWidth * 1.3, 64);
 
-        const longestWidth = rows.reduce((max, row) => {
+        const longestWidth = flattenedRows.reduce((max, row) => {
           const value = getCellText(row, column);
           if (!value) return max;
           return Math.max(max, doc.widthOfString(value));
@@ -3501,6 +3825,7 @@ exports.downloadShipmentReportPdf = async (req, res) => {
     const headerHeight = computeHeaderHeight();
 
     const computeRowHeight = (row) => {
+      if (row.rowType === 'spacer') return 14;
       doc.font('Helvetica').fontSize(7.5);
       return Math.max(
         minRowHeight,
@@ -3536,14 +3861,46 @@ exports.downloadShipmentReportPdf = async (req, res) => {
     };
 
     const drawRow = (row, y, rowHeight) => {
+      if (row.rowType === 'spacer') {
+        return;
+      }
       let x = startX;
-      doc.font('Helvetica').fontSize(7.5);
+      doc.font(row.rowType === 'childHeader' ? 'Helvetica-Bold' : 'Helvetica').fontSize(row.rowType === 'childHeader' ? 8 : 7.5);
+      if (row.rowType === 'child') {
+        doc.save();
+        doc.rect(startX, y, usableWidth, rowHeight).fill('#f8fafc');
+        doc.restore();
+      } else if (row.rowType === 'childHeader') {
+        doc.save();
+        doc.rect(startX, y, usableWidth, rowHeight).fill('#e2e8f0');
+        doc.restore();
+      }
       SHIPMENT_REPORT_COLUMNS.forEach((column, index) => {
         const width = columnWidths[index];
-        doc.rect(x, y, width, rowHeight).stroke('#0f172a');
+        const isChildHighlightColumn = column.key === 'shipmentNo' || column.key === 'actualShipmentNo';
+        if (row.rowType === 'childHeader') {
+          if (isChildHighlightColumn) {
+            doc.save();
+            doc.rect(x, y, width, rowHeight).fill('#fde68a');
+            doc.restore();
+          }
+          doc.rect(x, y, width, rowHeight).stroke('#94a3b8');
+        } else if (row.rowType === 'child') {
+          if (isChildHighlightColumn) {
+            doc.save();
+            doc.rect(x, y, width, rowHeight).fill('#fef3c7');
+            doc.restore();
+          }
+          doc.rect(x, y, width, rowHeight).stroke('#cbd5e1');
+        } else {
+          doc.rect(x, y, width, rowHeight).stroke('#0f172a');
+        }
+        const align = row.rowType === 'child' || row.rowType === 'childHeader'
+          ? 'center'
+          : 'left';
         doc.text(getCellText(row, column), x + 4, y + 5, {
           width: width - 8,
-          align: 'left',
+          align,
         });
         x += width;
       });
@@ -3554,7 +3911,7 @@ exports.downloadShipmentReportPdf = async (req, res) => {
     drawTableHeader(currentY);
     currentY += headerHeight;
 
-    rows.forEach((row) => {
+    flattenedRows.forEach((row) => {
       const rowHeight = computeRowHeight(row);
       if (currentY + rowHeight > footerY - 18) {
         doc.addPage();
@@ -4978,6 +5335,37 @@ exports.updateSupplierEmail = async (req, res) => {
     res.json({ message: 'Vendor email updated', supplierEmail: normalized });
   } catch (err) {
     console.error('updateSupplierEmail error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Update bank name on a shipment
+exports.updateBankName = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const bankName = typeof req.body.bankName === 'string' ? req.body.bankName.trim() : '';
+
+    const shipment = await Shipment.findById(id);
+    if (!shipment) return res.status(404).json({ message: 'Shipment not found' });
+
+    const before = { bankName: shipment.bankName || '' };
+    shipment.bankName = bankName;
+    await shipment.save();
+
+    await logAudit({
+      userId: req.user._id,
+      module: 'Shipment',
+      entity: 'Shipment',
+      entityId: shipment._id,
+      action: 'Updated',
+      before,
+      after: { bankName },
+      remarks: 'Bank name updated',
+    });
+
+    res.json({ message: 'Bank name updated', bankName });
+  } catch (err) {
+    console.error('updateBankName error:', err);
     res.status(500).json({ message: 'Server error' });
   }
 };

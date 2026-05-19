@@ -101,6 +101,38 @@ async function sendInternalUserInviteEmail({ to, userName, role, temporaryPasswo
   });
 }
 
+async function sendInternalUserPasswordResetEmail({ to, userName, role, temporaryPassword }) {
+  const transporter = getTransporter();
+  const { from } = getMailerConfig();
+  const portalUrl = process.env.INTERNAL_PORTAL_URL || 'http://localhost:4200/auth/login';
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: 'Royal Horizon Shipment Portal Password Reset',
+    text: [
+      `Hello ${userName},`,
+      '',
+      'Your password has been reset for the Royal Horizon shipment portal.',
+      `Login URL: ${portalUrl}`,
+      `Email: ${to}`,
+      `Role: ${role}`,
+      `Temporary Password: ${temporaryPassword}`,
+      '',
+      'You will be required to change this password when you sign in for the first time.',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+        <p>Hello ${userName},</p>
+        <p>Your password has been reset for the Royal Horizon shipment portal.</p>
+        <p><strong>Login URL:</strong> <a href="${portalUrl}">${portalUrl}</a></p>
+        <p><strong>Email:</strong> ${to}<br/><strong>Role:</strong> ${role}<br/><strong>Temporary Password:</strong> ${temporaryPassword}</p>
+        <p>You will be required to change this password when you sign in for the first time.</p>
+      </div>
+    `,
+  });
+}
+
 async function sendWorkflowUpdateEmail({
   to,
   userName,
@@ -521,6 +553,7 @@ async function sendPaymentCostingStatusEmail({
 module.exports = {
   sendSupplierInviteEmail,
   sendInternalUserInviteEmail,
+  sendInternalUserPasswordResetEmail,
   sendWorkflowUpdateEmail,
   sendShipmentScheduledEmail,
   sendActualContainerSavedEmail,

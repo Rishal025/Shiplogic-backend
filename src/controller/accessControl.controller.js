@@ -4,7 +4,7 @@ const Permission = require('../models/permission.model');
 const RolePermission = require('../models/rolePermission.model');
 const User = require('../models/auth.model');
 const { normalizeRole } = require('../core/utils/roleHelpers');
-const { sendInternalUserInviteEmail } = require('../services/mail.service');
+const { sendInternalUserInviteEmail, sendInternalUserPasswordResetEmail } = require('../services/mail.service');
 const roleRegistry = require('../core/utils/roleRegistry');
 const BLRowDefinition = require('../models/blRowDefinition.model');
 const {
@@ -688,6 +688,48 @@ exports.createUser = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Unable to create user', error: error.message });
+  }
+};
+
+exports.resetUserPassword = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const temporaryPassword = generateTemporaryPassword();
+    const before = userResponse(user);
+
+    user.password = temporaryPassword;
+    user.mustChangePassword = true;
+    await user.save();
+
+    await sendInternalUserPasswordResetEmail({
+      to: user.email,
+      userName: user.name,
+      role: user.role,
+      temporaryPassword,
+    });
+
+    await logAudit({
+      userId: req.user._id,
+      module: 'Access Control',
+      entity: 'User',
+      entityId: user._id,
+      action: 'ResetPassword',
+      before,
+      after: userResponse(user),
+      remarks: `Reset password for internal user ${user.email} and sent temporary password by email`,
+    });
+
+    res.json({
+      message: 'Password reset and email sent',
+      user: userResponse(user),
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Unable to reset password', error: error.message });
   }
 };
 /**

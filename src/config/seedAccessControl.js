@@ -36,6 +36,8 @@ const SHIPMENT_PERMISSION_TEMPLATES = [
   // Fields
   { key: 'shipment.field.shipment_entry.supplierEmail.edit', resource: 'shipment', screen: 'create_shipment',  tab: 'shipment_entry', field: 'supplierEmail', type: 'field', action: 'edit', label: 'Edit Supplier Email', sortOrder: 102 },
   { key: 'shipment.field.shipment_entry.quantityFinancialSummary.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'shipment_entry', field: 'quantityFinancialSummary', type: 'field', action: 'view', label: 'View Quantity & Financial Summary', sortOrder: 103 },
+  { key: 'shipment.field.shipment_entry.bankName.view', resource: 'shipment', screen: 'shipment_tracker', tab: 'shipment_entry', field: 'bankName', type: 'field', action: 'view', label: 'View Bank Name', sortOrder: 104 },
+  { key: 'shipment.field.shipment_entry.bankName.edit', resource: 'shipment', screen: 'shipment_tracker', tab: 'shipment_entry', field: 'bankName', type: 'field', action: 'edit', label: 'Edit Bank Name', sortOrder: 105 },
 
   // ─── Shipment Tracker Split Tab ───────────────────────────────────────────
   { key: 'shipment.tab.shipment_tracker_split.view',          resource: 'shipment', screen: 'shipment_tracker', tab: 'shipment_tracker_split', type: 'tab',    label: 'View Shipment Tracker Split', sortOrder: 110 },
