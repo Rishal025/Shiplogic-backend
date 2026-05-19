@@ -5,8 +5,52 @@ const shipmentSchema = new mongoose.Schema({
 
   poNumber: { type: String, required: true },
   year: { type: Number, required: true },
-  supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: true },
-  itemId: { type: mongoose.Schema.Types.ObjectId, ref: "Item", required: true },
+  supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: false },
+  itemId: { type: mongoose.Schema.Types.ObjectId, ref: "Item" },
+  supplierName: { type: String },
+  supplierEmail: { type: String, trim: true, lowercase: true },
+  itemCode: { type: String },
+  itemDescription: { type: String },
+  commodity: { type: String },
+  countryOfOrigin: { type: String },
+  brandName: { type: String },
+  barcode: { type: String },
+  variant: { type: String },
+  hsCode: { type: String },
+  packing: { type: String },
+  portOfLoading: { type: String },
+  portOfDischarge: { type: String },
+  piDate: { type: Date },
+  fcl: { type: Number, default: 0 },
+  pallet: { type: Number, default: 0 },
+  bags: { type: Number, default: 0 },
+  bankName: { type: String },
+  q1Report: { type: mongoose.Schema.Types.Mixed },
+  lineItems: [{
+    lineNo: { type: Number },
+    itemCode: { type: String },
+    itemDescription: { type: String },
+    commodity: { type: String },
+    countryOfOrigin: { type: String },
+    brandName: { type: String },
+    barcode: { type: String },
+    dmBarcode: { type: String },
+    variant: { type: String },
+    hsCode: { type: String },
+    packagingType: { type: String },
+    containerSize: { type: String },
+    plannedContainers: { type: Number, default: 0 },
+    fcl: { type: Number, default: 0 },
+    pallet: { type: Number, default: 0 },
+    bags: { type: Number, default: 0 },
+    buyingUnit: { type: String },
+    fclPerUnit: { type: Number, default: 0 },
+    fcPerUnit: { type: Number, default: 0 },
+    totalUSD: { type: Number, default: 0 },
+    totalAED: { type: Number, default: 0 },
+    expectedETD: { type: Date },
+    expectedETA: { type: Date }
+  }],
 
   shipmentNo: { type: String, unique: true },
   plannedQtyMT: { type: Number, required: true },
@@ -32,6 +76,12 @@ const shipmentSchema = new mongoose.Schema({
   advanceAmount: { type: Number, default: 0 }, 
   incoterms:{type:String},
   buyunit:{type:String},
+  lpoDocumentName: { type: String },
+  lpoDocumentUrl: { type: String },
+  proformaDocumentName: { type: String },
+  proformaDocumentUrl: { type: String },
+  s1QualityReportName: { type: String },
+  s1QualityReportUrl: { type: String },
   containersize:{type:Number, default: 0 },
   payment: {
   totalAmount: { type: Number, default: 0 },
@@ -47,19 +97,20 @@ const shipmentSchema = new mongoose.Schema({
       
   advanceAmountDate: { type: Date },   
 
+  noOfShipments: { type: Number, default: null },
   currentStage: {
     type: String,
     enum: [
       "Shipment Entry",
       "Planned Split",
       "Shipment Split",
-      "Payment Completed",
-      "Arrived",
-      "Documentation Completed",
-      "Under Clearance",
-      "Cleared",
-      "Released",
-      "GRN Completed"
+      "B/L Details",
+      "Documentation",
+      "Port & Customs",
+      "Storage",
+      "Quality",
+      "Payment Costing",
+      "Completed"
     ],
     default: "Shipment Entry"
   }
@@ -67,4 +118,3 @@ const shipmentSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 module.exports = mongoose.model("Shipment", shipmentSchema);
-
